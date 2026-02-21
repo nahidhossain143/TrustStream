@@ -35,13 +35,13 @@ The TrustStream framework operates through a four-step pipeline to ensure secure
 
 👥 Contributors
 
-    Sumaiya Aftab (ID: 20220104002) 
+    Nadia Supti (ID: 20220104002) 
 
-    Md Nahid Hossain (ID: 20220104116) 
+    Sumaiya Aftab (ID: 20220104116) 
 
-    Nadia Supti (ID: 20220104146) 
+    Md Nahid Hossain (ID: 20220104146) 
 
-Program: B.Sc. in Computer Science and Engineering Institution: Ahsanullah University of Science and Technology (AUST) Date: January 2026 
+Program: B.Sc. in Computer Science and Engineering Institution: Ahsanullah University of Science and Technology (AUST) Date: February 2026 
 📜 Conclusion
 
 TrustStream bridges the gap between theoretical provenance standards and real-world operational requirements. It offers a robust, decentralized solution to combat misinformation and restore public confidence in digital media.
