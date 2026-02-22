@@ -1,5 +1,17 @@
+# Dependencies
 node_modules/
+
+# Environment variables
 .env
-dist/
-build/
-data/
+backend/.env
+
+# Uploaded & generated video files
+backend/public/uploads/
+backend/public/streams/
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
