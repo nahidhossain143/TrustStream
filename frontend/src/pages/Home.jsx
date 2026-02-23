@@ -33,8 +33,8 @@ export default function Home() {
   };
 
   const formatDuration = (secs) => {
-    const m = Math.floor(secs / 60);
-    const s = Math.round(secs % 60);
+    const m = Math.floor((secs || 0) / 60);
+    const s = Math.round((secs || 0) % 60);
     return `${m}:${s.toString().padStart(2, "0")}`;
   };
 
@@ -45,177 +45,228 @@ export default function Home() {
     return `${Math.floor(diff / 86400)}d ago`;
   };
 
+  // ── Loading ──────────────────────────────────────────────
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-neutral-950 flex flex-col">
+        <Navbar />
+        <div className="flex-1 flex items-center justify-center">
+          <div className="flex flex-col items-center gap-3">
+            <div className="w-8 h-8 rounded-full border-2 border-blue-500 border-t-transparent animate-spin" />
+            <p className="text-xs text-neutral-600 tracking-widest uppercase font-mono">
+              Loading feed...
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Empty ────────────────────────────────────────────────
+  if (videoList.length === 0) {
+    return (
+      <div className="min-h-screen bg-neutral-950 flex flex-col">
+        <Navbar />
+        <div className="flex-1 flex items-center justify-center">
+          <div className="text-center space-y-4">
+            <div className="w-16 h-16 rounded-2xl bg-neutral-900 border border-neutral-800 flex items-center justify-center text-3xl mx-auto">
+              📡
+            </div>
+            <div>
+              <p className="text-white font-semibold text-lg">No broadcasts yet</p>
+              <p className="text-neutral-600 text-sm mt-1">
+                Visit <a href="/admin" className="text-blue-500 hover:underline">Admin</a> to upload content
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Main ─────────────────────────────────────────────────
   return (
-    <div style={{ fontFamily: "'DM Sans', sans-serif" }}
-      className="min-h-screen bg-[#0f0f0f] text-gray-100">
-
-      {/* Google Font */}
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Mono:wght@400;500&display=swap');
-        
-        ::-webkit-scrollbar { width: 4px; }
-        ::-webkit-scrollbar-track { background: #0f0f0f; }
-        ::-webkit-scrollbar-thumb { background: #333; border-radius: 4px; }
-
-        .news-card:hover .card-title { color: #fff; }
-        .news-card:hover { background: #1a1a1a; }
-
-        @keyframes fadeIn {
-          from { opacity: 0; transform: translateY(8px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-        .fade-in { animation: fadeIn 0.35s ease forwards; }
-
-        @keyframes pulse-ring {
-          0% { box-shadow: 0 0 0 0 rgba(59,130,246,0.4); }
-          70% { box-shadow: 0 0 0 8px rgba(59,130,246,0); }
-          100% { box-shadow: 0 0 0 0 rgba(59,130,246,0); }
-        }
-        .active-ring { animation: pulse-ring 2s infinite; }
-      `}</style>
-
+    <div className="min-h-screen bg-neutral-950 text-neutral-100">
       <Navbar />
 
-      {loading ? (
-        <div className="flex items-center justify-center h-[80vh]">
-          <div className="flex flex-col items-center gap-3">
-            <div className="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-            <p className="text-gray-500 text-sm">Loading news feed...</p>
+      <div className="max-w-screen-2xl mx-auto px-4 sm:px-6 py-5 flex flex-col lg:flex-row gap-5">
+
+        {/* ══ LEFT: Player + Info ══ */}
+        <div className="flex-1 min-w-0 space-y-4">
+
+          {/* Video Player */}
+          <div className="relative rounded-xl overflow-hidden bg-black ring-1 ring-white/10 shadow-2xl shadow-black/60 aspect-video">
+            {/* top glow line */}
+            <div className="absolute top-0 left-1/4 right-1/4 h-px bg-gradient-to-r from-transparent via-blue-500/50 to-transparent z-10" />
+            <VideoPlayer videoId={selected?.id} onVerify={handleVerify} />
           </div>
-        </div>
-      ) : videoList.length === 0 ? (
-        <div className="flex items-center justify-center h-[80vh]">
-          <div className="text-center">
-            <div className="text-5xl mb-4">📡</div>
-            <p className="text-gray-400 text-lg font-medium">No news uploaded yet</p>
-            <p className="text-gray-600 text-sm mt-1">Visit the Admin panel to upload content</p>
-          </div>
-        </div>
-      ) : (
-        <div className="max-w-[1400px] mx-auto px-6 py-6 flex gap-6 fade-in">
 
-          {/* ── LEFT: Main Player ── */}
-          <div className="flex-1 min-w-0">
+          {/* Verification Badge */}
+          <VerificationBadge verified={verified} details={verifyDetails} />
 
-            {/* Video */}
-            <div className="rounded-xl overflow-hidden bg-black aspect-video w-full">
-              <VideoPlayer videoId={selected?.id} onVerify={handleVerify} />
-            </div>
+          {/* Title */}
+          <h1 className="text-xl font-bold text-white leading-snug tracking-tight">
+            {selected?.title}
+          </h1>
 
-            {/* Verification Badge */}
-            <div className="mt-3">
-              <VerificationBadge verified={verified} details={verifyDetails} />
-            </div>
-
-            {/* Title & Meta */}
-            <div className="mt-4">
-              <h1 className="text-xl font-semibold text-white leading-snug">
-                {selected?.title}
-              </h1>
-
-              <div className="flex items-center justify-between mt-3 pb-3 border-b border-[#272727]">
-                <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-full bg-blue-600 flex items-center justify-center text-sm font-bold text-white flex-shrink-0">
-                    TS
-                  </div>
-                  <div>
-                    <p className="text-sm font-medium text-white">TrustStream News</p>
-                    <p className="text-xs text-gray-500">Verified Publisher</p>
-                  </div>
+          {/* Publisher Row */}
+          <div className="flex items-center justify-between flex-wrap gap-3 pb-4 border-b border-neutral-800/60">
+            {/* Publisher */}
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-blue-700 to-violet-700 flex items-center justify-center text-sm font-bold text-white flex-shrink-0 ring-1 ring-white/10">
+                TS
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-semibold text-white">TrustStream News</span>
+                  <span className="text-[9px] font-bold text-blue-400 bg-blue-500/10 border border-blue-500/20 px-1.5 py-0.5 rounded-md uppercase tracking-wider">
+                    Verified
+                  </span>
                 </div>
-
-                <div className="flex items-center gap-2 text-xs text-gray-500">
-                  <span className="bg-[#272727] px-3 py-1.5 rounded-full">
-                    🎬 {selected?.total_segments} segments
-                  </span>
-                  <span className="bg-[#272727] px-3 py-1.5 rounded-full">
-                    ⏱ {formatDuration(selected?.duration_seconds || 0)}
-                  </span>
-                  <span className="bg-[#272727] px-3 py-1.5 rounded-full">
-                    📅 {timeAgo(selected?.created_at)}
-                  </span>
+                <div className="flex items-center gap-1.5 mt-0.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_#4ade80] animate-pulse flex-shrink-0" />
+                  <span className="text-[10px] text-neutral-600 font-mono">Blockchain authenticated</span>
                 </div>
               </div>
+            </div>
 
-              {selected?.description && (
-                <div className="mt-3 bg-[#1a1a1a] rounded-xl px-4 py-3">
-                  <p className="text-sm text-gray-300 leading-relaxed">
-                    {selected.description}
+            {/* Stats */}
+            <div className="flex items-center gap-2">
+              {[
+                { icon: "🎬", label: `${selected?.total_segments ?? 0} segs` },
+                { icon: "⏱", label: formatDuration(selected?.duration_seconds) },
+                { icon: "📅", label: timeAgo(selected?.created_at) },
+              ].map(({ icon, label }) => (
+                <span
+                  key={label}
+                  className="inline-flex items-center gap-1.5 bg-neutral-900 border border-neutral-800 rounded-lg px-3 py-1.5 text-[11px] text-neutral-500"
+                >
+                  {icon} {label}
+                </span>
+              ))}
+            </div>
+          </div>
+
+          {/* Description */}
+          {selected?.description && (
+            <p className="text-sm text-neutral-500 leading-relaxed">
+              {selected.description}
+            </p>
+          )}
+
+          {/* Cryptographic Proof Panel */}
+          {verifyDetails && (
+            <div className="rounded-xl bg-neutral-900/60 border border-neutral-800/60 p-4 backdrop-blur-sm space-y-3">
+              {/* Header */}
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 text-[10px] font-semibold text-neutral-600 uppercase tracking-widest">
+                  <span>🔐</span>
+                  <span>Cryptographic Proof</span>
+                  <div className="flex-1 h-px bg-neutral-800/80 ml-1" />
+                </div>
+                <span className="font-mono text-[9px] text-neutral-700">
+                  seg_{String(verifyDetails.segmentIndex).padStart(3, "0")}
+                </span>
+              </div>
+
+              {/* Hash rows */}
+              <div className="space-y-2">
+                {[
+                  { label: "Browser", value: verifyDetails.clientHash, color: "text-emerald-500/80" },
+                  { label: "Ledger",  value: verifyDetails.storedHash,  color: "text-blue-400/80"   },
+                ].map(({ label, value, color }) => (
+                  <div key={label} className="flex gap-3 items-start pt-2 border-t border-neutral-800/40 first:border-0 first:pt-0">
+                    <span className="font-mono text-[9px] text-neutral-700 uppercase tracking-widest w-12 flex-shrink-0 pt-0.5">
+                      {label}
+                    </span>
+                    <span className={`font-mono text-[10px] leading-relaxed break-all ${color}`}>
+                      {value}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              {/* Consortium endorsements */}
+              {verifyDetails.endorsementCount > 0 && (
+                <div className="pt-3 border-t border-neutral-800/40 space-y-2">
+                  <p className="font-mono text-[9px] text-neutral-700 uppercase tracking-widest">
+                    Consortium Endorsements ({verifyDetails.endorsementCount}/3)
                   </p>
+                  <div className="flex flex-wrap gap-2">
+                    {[
+                      { name: "NewsAgency",  icon: "🏢", min: 1, colors: "text-emerald-400 bg-emerald-950/30 border-emerald-800/40" },
+                      { name: "Broadcaster", icon: "📡", min: 2, colors: "text-blue-400 bg-blue-950/30 border-blue-800/40"         },
+                      { name: "Auditor",     icon: "🔍", min: 3, colors: "text-violet-400 bg-violet-950/30 border-violet-800/40"   },
+                    ].filter(o => verifyDetails.endorsementCount >= o.min).map(o => (
+                      <span
+                        key={o.name}
+                        className={`inline-flex items-center gap-1.5 text-[10px] font-medium border rounded-md px-2 py-1 ${o.colors}`}
+                      >
+                        {o.icon} {o.name}
+                      </span>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
+          )}
+        </div>
 
-            {/* Hash details */}
-            {verifyDetails && (
-              <div className="mt-4 bg-[#111] border border-[#222] rounded-xl p-4 fade-in">
-                <p className="text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider"
-                   style={{ fontFamily: "'DM Mono', monospace" }}>
-                  Cryptographic Proof — Segment {verifyDetails.segmentIndex}
-                </p>
-                <div className="space-y-2 text-xs"
-                     style={{ fontFamily: "'DM Mono', monospace" }}>
-                  <div className="flex gap-2">
-                    <span className="text-gray-600 w-20 flex-shrink-0">Browser:</span>
-                    <span className="text-green-400 break-all">{verifyDetails.clientHash}</span>
-                  </div>
-                  <div className="flex gap-2">
-                    <span className="text-gray-600 w-20 flex-shrink-0">Ledger:</span>
-                    <span className="text-blue-400 break-all">{verifyDetails.storedHash}</span>
-                  </div>
-                </div>
-              </div>
-            )}
+        {/* ══ RIGHT: Sidebar ══ */}
+        <div className="lg:w-80 xl:w-[340px] flex-shrink-0 space-y-1 lg:max-h-[calc(100vh-80px)] lg:overflow-y-auto lg:pr-1">
+
+          {/* Label */}
+          <div className="flex items-center gap-2 px-1 mb-3">
+            <span className="text-[9px] font-bold text-neutral-700 uppercase tracking-widest">📡 Live Feed</span>
+            <div className="flex-1 h-px bg-neutral-800/60" />
           </div>
 
-          {/* ── RIGHT: Sidebar (YT style) ── */}
-          <div className="w-[360px] flex-shrink-0 space-y-2 max-h-[calc(100vh-100px)] overflow-y-auto pr-1">
-            <p className="text-xs font-semibold text-gray-500 uppercase tracking-widest px-1 mb-3">
-              📡 News Feed
-            </p>
-
-            {videoList.map((v) => (
-              <div
+          {videoList.map((v) => {
+            const isActive = selected?.id === v.id;
+            return (
+              <button
                 key={v.id}
                 onClick={() => setSelected(v)}
-                className={`news-card cursor-pointer rounded-xl p-3 flex gap-3 transition-all duration-200 border ${
-                  selected?.id === v.id
-                    ? "bg-[#1a1a1a] border-blue-500/40 active-ring"
-                    : "bg-transparent border-transparent hover:border-[#2a2a2a]"
+                className={`w-full text-left flex gap-3 p-3 rounded-xl border transition-all duration-200 ${
+                  isActive
+                    ? "bg-blue-500/5 border-blue-500/25 ring-1 ring-blue-500/10"
+                    : "bg-transparent border-transparent hover:bg-neutral-900/60 hover:border-neutral-800"
                 }`}
               >
                 {/* Thumbnail */}
-                <div className="w-40 h-24 rounded-lg bg-[#1a1a1a] flex-shrink-0 flex items-center justify-center relative overflow-hidden border border-[#2a2a2a]">
-                  <div className="absolute inset-0 bg-gradient-to-br from-blue-900/30 to-purple-900/20" />
-                  <span className="text-2xl z-10">📰</span>
-                  <span className="absolute bottom-1 right-1 bg-black/80 text-white text-[10px] px-1.5 py-0.5 rounded font-medium">
-                    {formatDuration(v.duration_seconds || 0)}
+                <div className="relative w-32 h-[72px] flex-shrink-0 rounded-lg overflow-hidden bg-neutral-900 border border-neutral-800">
+                  <div className="absolute inset-0 bg-gradient-to-br from-blue-900/30 to-violet-900/20" />
+                  <div className="absolute inset-0 flex items-center justify-center text-xl">
+                    {isActive ? "▶️" : "📰"}
+                  </div>
+                  <span className="absolute bottom-1.5 right-1.5 bg-black/80 text-neutral-300 font-mono text-[9px] px-1.5 py-0.5 rounded">
+                    {formatDuration(v.duration_seconds)}
                   </span>
-                  {selected?.id === v.id && (
-                    <div className="absolute inset-0 border-2 border-blue-500 rounded-lg" />
+                  {isActive && (
+                    <div className="absolute inset-0 border border-blue-500/40 rounded-lg" />
                   )}
                 </div>
 
                 {/* Info */}
-                <div className="flex-1 min-w-0 py-0.5">
-                  <p className={`card-title text-sm font-medium leading-snug line-clamp-2 transition-colors ${
-                    selected?.id === v.id ? "text-white" : "text-gray-300"
-                  }`}>
+                <div className="flex-1 min-w-0 space-y-1.5 py-0.5">
+                  <p className={`text-[12.5px] font-medium leading-snug line-clamp-2 ${isActive ? "text-white" : "text-neutral-400"}`}>
                     {v.title}
                   </p>
-                  <p className="text-xs text-gray-600 mt-1.5">TrustStream News</p>
-                  <div className="flex items-center gap-1.5 mt-1">
-                    <span className="text-[10px] text-gray-600">{v.total_segments} segs</span>
-                    <span className="text-gray-700">·</span>
-                    <span className="text-[10px] text-gray-600">{timeAgo(v.created_at)}</span>
+                  <p className="text-[10px] text-neutral-700">TrustStream News</p>
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-mono text-[9px] text-neutral-700 bg-neutral-900 border border-neutral-800 px-1.5 py-0.5 rounded">
+                      {v.total_segments} segs
+                    </span>
+                    <span className="text-neutral-800 text-[10px]">·</span>
+                    <span className="text-[10px] text-neutral-700">{timeAgo(v.created_at)}</span>
                   </div>
                 </div>
-              </div>
-            ))}
-          </div>
-
+              </button>
+            );
+          })}
         </div>
-      )}
+
+      </div>
     </div>
   );
 }

@@ -40,10 +40,14 @@ export default function VideoPlayer({ videoId, onVerify }) {
             clientHash,
           });
 
+          const bc = verifyRes.data.blockchain;
           onVerify(verifyRes.data.isMatch ? "verified" : "tampered", {
             segmentIndex,
             clientHash,
-            storedHash: verifyRes.data.storedHash,
+            storedHash:          verifyRes.data.storedHash,
+            blockchainVerified:  bc ? bc.hashMatch : null,
+            fullyEndorsed:       bc ? bc.fullyEndorsed : null,
+            endorsementCount:    bc ? bc.endorsementCount : null,
           });
 
         } catch (err) {
