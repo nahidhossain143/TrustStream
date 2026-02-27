@@ -38,25 +38,39 @@ try {
 const CONTRACT_ABI = [
   {
     inputs: [
-      { internalType: "address", name: "newsAgencyAddr", type: "address" },
+      { internalType: "address", name: "newsAgencyAddr",  type: "address" },
       { internalType: "address", name: "broadcasterAddr", type: "address" },
-      { internalType: "address", name: "auditorAddr",    type: "address" },
+      { internalType: "address", name: "auditorAddr",     type: "address" },
     ],
     stateMutability: "nonpayable",
     type: "constructor",
   },
+  // registerVideo — new function
   {
     inputs: [
       { internalType: "string",  name: "videoId",       type: "string"  },
-      { internalType: "uint256", name: "segmentIndex",  type: "uint256" },
-      { internalType: "string",  name: "sha256Hash",    type: "string"  },
-      { internalType: "string",  name: "chainHash",     type: "string"  },
+      { internalType: "string",  name: "title",         type: "string"  },
+      { internalType: "uint256", name: "totalSegments", type: "uint256" },
+    ],
+    name: "registerVideo",
+    outputs: [],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+  // registerSegment — only NewsAgency
+  {
+    inputs: [
+      { internalType: "string",  name: "videoId",      type: "string"  },
+      { internalType: "uint256", name: "segmentIndex", type: "uint256" },
+      { internalType: "string",  name: "sha256Hash",   type: "string"  },
+      { internalType: "string",  name: "chainHash",    type: "string"  },
     ],
     name: "registerSegment",
     outputs: [],
     stateMutability: "nonpayable",
     type: "function",
   },
+  // endorseSegment — only Broadcaster/Auditor
   {
     inputs: [
       { internalType: "string",  name: "videoId",      type: "string"  },
@@ -67,6 +81,7 @@ const CONTRACT_ABI = [
     stateMutability: "nonpayable",
     type: "function",
   },
+  // verifySegment
   {
     inputs: [
       { internalType: "string",  name: "videoId",      type: "string"  },
@@ -82,6 +97,22 @@ const CONTRACT_ABI = [
     stateMutability: "view",
     type: "function",
   },
+  // getVideo — new function
+  {
+    inputs: [{ internalType: "string", name: "videoId", type: "string" }],
+    name: "getVideo",
+    outputs: [
+      { internalType: "string",  name: "title",        type: "string"  },
+      { internalType: "string",  name: "uploader",     type: "string"  },
+      { internalType: "address", name: "uploaderAddr", type: "address" },
+      { internalType: "uint256", name: "totalSegments",type: "uint256" },
+      { internalType: "uint256", name: "registeredAt", type: "uint256" },
+      { internalType: "bool",    name: "exists",       type: "bool"    },
+    ],
+    stateMutability: "view",
+    type: "function",
+  },
+  // getEndorsements
   {
     inputs: [
       { internalType: "string",  name: "videoId",      type: "string"  },
@@ -96,6 +127,7 @@ const CONTRACT_ABI = [
     stateMutability: "view",
     type: "function",
   },
+  // getTxLogCount
   {
     inputs: [],
     name: "getTxLogCount",
@@ -103,6 +135,7 @@ const CONTRACT_ABI = [
     stateMutability: "view",
     type: "function",
   },
+  // getTxLog
   {
     inputs: [{ internalType: "uint256", name: "index", type: "uint256" }],
     name: "getTxLog",
@@ -129,25 +162,37 @@ if (deploymentInfo) {
 }
 
 // ============================================================
+// Helper: Register video metadata on blockchain
+// ============================================================
+const registerVideoOnChain = async (videoId, title, totalSegments) => {
+  if (!contract || !orgs) return;
+  try {
+    await contract.methods
+      .registerVideo(videoId, title, totalSegments)
+      .send({ from: orgs.newsAgency.address, gas: 500000 });
+    console.log(`⛓️  Video "${title}" registered on blockchain ✅`);
+  } catch (err) {
+    console.error(`⚠️  Blockchain registerVideo failed:`, err.message);
+  }
+};
+
+// ============================================================
 // Helper: Register + 3-org endorsement on blockchain
 // ============================================================
 const registerAndEndorse = async (videoId, segmentIndex, sha256Hash, chainHash) => {
   if (!contract || !orgs) return;
   try {
-    // Org1 — NewsAgency registers the segment
     await contract.methods
       .registerSegment(videoId, segmentIndex, sha256Hash, chainHash)
       .send({ from: orgs.newsAgency.address, gas: 1000000 });
 
-    // Org2 — Broadcaster endorses
     await contract.methods
       .endorseSegment(videoId, segmentIndex)
-      .send({ from: orgs.broadcaster.address, gas: 500000});
+      .send({ from: orgs.broadcaster.address, gas: 500000 });
 
-    // Org3 — Auditor endorses
     await contract.methods
       .endorseSegment(videoId, segmentIndex)
-      .send({ from: orgs.auditor.address, gas: 500000});
+      .send({ from: orgs.auditor.address, gas: 500000 });
 
     console.log(`⛓️  Segment ${segmentIndex}: registered + endorsed by 3 orgs ✅`);
   } catch (err) {
@@ -156,25 +201,29 @@ const registerAndEndorse = async (videoId, segmentIndex, sha256Hash, chainHash) 
 };
 
 // ============================================================
-// Helper: SHA-256 hash of a file
+// Helper: SHA-256 hash of a file (stream-based)
 // ============================================================
 const hashFile = (filePath) => {
-  const buffer = fs.readFileSync(filePath);
-  return crypto.createHash("sha256").update(buffer).digest("hex");
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash("sha256");
+    const stream = fs.createReadStream(filePath);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("end", () => resolve(hash.digest("hex")));
+    stream.on("error", reject);
+  });
 };
 
 const upload = multer({ dest: "public/uploads/" });
 
 // ============================================================
 // POST /api/upload
-// Admin uploads video → FFmpeg → hash → DB + Blockchain
+// Admin uploads video → FFmpeg → DB + Blockchain
 // ============================================================
 router.post("/", upload.single("video"), async (req, res) => {
   const inputPath   = req.file.path;
   const title       = req.body.title || req.file.originalname;
   const description = req.body.description || "";
 
-  // 1. Create video record in DB
   let video;
   try {
     video = await createVideo({
@@ -192,7 +241,6 @@ router.post("/", upload.single("video"), async (req, res) => {
   fs.mkdirSync(outputFolder, { recursive: true });
   const playlistPath = `${outputFolder}/playlist.m3u8`;
 
-  // 2. FFmpeg segmentation
   const ffmpegCmd = `ffmpeg -i "${inputPath}" -c:v libx264 -c:a aac -hls_time 2 -hls_playlist_type vod -hls_segment_filename "${outputFolder}/seg_%03d.ts" "${playlistPath}"`;
 
   exec(ffmpegCmd, async (err) => {
@@ -201,12 +249,14 @@ router.post("/", upload.single("video"), async (req, res) => {
       return res.status(500).json({ error: "FFmpeg failed", videoId });
     }
 
-    // 3. Hash each segment → DB + Blockchain
     try {
       const files = fs
         .readdirSync(outputFolder)
         .filter((f) => f.endsWith(".ts"))
         .sort();
+
+      // Register video metadata on blockchain
+      registerVideoOnChain(videoId, title, files.length);
 
       let prevHash = null;
 
@@ -215,17 +265,15 @@ router.post("/", upload.single("video"), async (req, res) => {
         const filePath = path.join(outputFolder, filename);
         const stats    = fs.statSync(filePath);
 
-        // SHA-256 of segment
-        const sha256Hash = hashFile(filePath);
+        const sha256Hash = await hashFile(filePath);
 
-        // Chain hash: SHA-256(currentHash + prevHash)
-        const chainInput = sha256Hash + (prevHash || "");
-        const chainHash  = crypto
+        const chainInput  = sha256Hash + (prevHash || "");
+        const chainBuffer = Buffer.from(chainInput, "hex");
+        const chainHash   = crypto
           .createHash("sha256")
-          .update(chainInput)
+          .update(chainBuffer)
           .digest("hex");
 
-        // Save to PostgreSQL
         await createSegment({
           videoId,
           segmentIndex: i,
@@ -238,21 +286,21 @@ router.post("/", upload.single("video"), async (req, res) => {
           fileSizeBytes: stats.size,
         });
 
-        // Store on blockchain (non-blocking — runs in background)
+        // Blockchain (non-blocking)
         registerAndEndorse(videoId, i, sha256Hash, chainHash);
 
         prevHash = sha256Hash;
       }
 
-      // 4. Update video status to ready
       await updateVideoReady(videoId, files.length, files.length * 2);
 
       res.json({
-        message:       "Upload & segmentation complete ✅",
+        message:       "Upload complete ✅",
         videoId,
         totalSegments: files.length,
         playlistUrl:   `/streams/${videoId}/playlist.m3u8`,
       });
+
     } catch (dbErr) {
       console.error("DB/hash error:", dbErr.message);
       res.status(500).json({ error: "Processing failed", videoId });
@@ -285,8 +333,7 @@ router.get("/videos/:videoId/segments", async (req, res) => {
 });
 
 // ============================================================
-// POST /api/upload/verify
-// Frontend hash → compare DB + Blockchain
+// POST /api/upload/verify — DB + Blockchain dual verification
 // ============================================================
 router.post("/verify", async (req, res) => {
   const { videoId, segmentIndex, clientHash } = req.body;
@@ -299,7 +346,6 @@ router.post("/verify", async (req, res) => {
 
     const isMatch = segment.sha256_hash === clientHash;
 
-    // Blockchain verification
     let blockchainResult = null;
     if (contract) {
       try {
@@ -316,7 +362,6 @@ router.post("/verify", async (req, res) => {
       }
     }
 
-    // Log verification
     await logVerification({
       videoId,
       segmentIndex,
@@ -329,8 +374,29 @@ router.post("/verify", async (req, res) => {
     res.json({
       isMatch,
       storedHash: segment.sha256_hash,
-      blockchain:  blockchainResult,
-      status:      isMatch ? "✅ Authentic" : "🔴 Tampered",
+      blockchain: blockchainResult,
+      status:     isMatch ? "✅ Authentic" : "🔴 Tampered",
+    });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
+// GET /api/upload/blockchain/video/:videoId — on-chain metadata
+// ============================================================
+router.get("/blockchain/video/:videoId", async (req, res) => {
+  if (!contract) return res.json({ exists: false });
+  try {
+    const result = await contract.methods.getVideo(req.params.videoId).call();
+    res.json({
+      title:         result.title,
+      uploader:      result.uploader,
+      uploaderAddr:  result.uploaderAddr,
+      totalSegments: Number(result.totalSegments),
+      registeredAt:  Number(result.registeredAt),
+      exists:        result.exists,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -339,7 +405,6 @@ router.post("/verify", async (req, res) => {
 
 // ============================================================
 // GET /api/upload/blockchain/endorsements/:videoId/:segmentIndex
-// Get endorsement list for a segment
 // ============================================================
 router.get("/blockchain/endorsements/:videoId/:segmentIndex", async (req, res) => {
   if (!contract) return res.json({ endorsements: [] });
@@ -363,14 +428,13 @@ router.get("/blockchain/endorsements/:videoId/:segmentIndex", async (req, res) =
 
 // ============================================================
 // GET /api/upload/blockchain/txlogs
-// Recent blockchain transaction logs (audit trail)
 // ============================================================
 router.get("/blockchain/txlogs", async (req, res) => {
   if (!contract) return res.json({ logs: [] });
   try {
     const count = Number(await contract.methods.getTxLogCount().call());
     const logs  = [];
-    const start = Math.max(0, count - 20); // last 20 logs
+    const start = Math.max(0, count - 20);
 
     for (let i = start; i < count; i++) {
       const log = await contract.methods.getTxLog(i).call();
@@ -384,7 +448,7 @@ router.get("/blockchain/txlogs", async (req, res) => {
       });
     }
 
-    res.json({ logs: logs.reverse() }); // newest first
+    res.json({ logs: logs.reverse() });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
