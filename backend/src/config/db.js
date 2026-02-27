@@ -1,21 +1,25 @@
 const { Pool } = require('pg');
 
 const pool = new Pool({
-  host: '127.0.0.1',
-  port: 5432,
-  database: 'truststream',
-  user: 'postgres',
-  password: '2580',
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnorganized: false },
+  max: 5,
+  idleTimeoutMillis: 10000,
+  connectionTimeoutMillis: 10000,
+  keepAlive: true,
+  keepAliveInitialDelayMillis: 10000,
 });
 
-// Test connection on startup
-pool.connect((err, client, release) => {
-  if (err) {
-    console.error('❌ PostgreSQL connection failed:', err.message);
-  } else {
-    console.log('✅ PostgreSQL connected successfully');
-    release();
-  }
+// Handle pool errors — prevent server crash
+pool.on('error', (err) => {
+  console.error('⚠️  PostgreSQL pool error (ignored):', err.message);
 });
+
+pool.connect()
+  .then(client => {
+    console.log('✅ PostgreSQL connected successfully');
+    client.release();
+  })
+  .catch(err => console.error('❌ PostgreSQL connection error:', err.message));
 
 module.exports = pool;
