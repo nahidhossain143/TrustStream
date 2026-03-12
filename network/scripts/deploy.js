@@ -5,10 +5,9 @@ async function main() {
   const [deployer] = await hre.ethers.getSigners();
   console.log("🏢 Deploying with account:", deployer.address);
 
-  const newsAgency  = "0x13EF2Ab9b77e3c9c4B1B654190320C94d3296A09";
-  const broadcaster = "0x792C62F52B2E6451C10F76619c785Bf1133A5869";
-  const auditor     = "0x91F82a580C5aAb605AC39c18a56B36f047A84c11";
-
+ const newsAgency  = "0x4b4b13F24F888FaaaDF4E301e48933C2f8243137";
+const broadcaster = "0xe0C68F64e2E871D01A073D2cd25100f5A5d161d6";
+const auditor     = "0x6986205bE39f85627934D6edf7dA627f0857eA86";
   const TrustStream = await hre.ethers.getContractFactory("TrustStream");
   const contract = await TrustStream.deploy(newsAgency, broadcaster, auditor);
 

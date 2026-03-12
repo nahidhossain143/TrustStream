@@ -13,19 +13,32 @@ export default function Home() {
   const [walletAddress, setWalletAddress] = useState(null);
 
   useEffect(() => {
+<<<<<<< Updated upstream
     // Page load এ wallet সবসময় disconnect থাকবে
     setWalletAddress(null);
 
     api.get("/upload/videos")
       .then(res => {
         const ready = res.data.filter(v => v.status === "ready");
+=======
+    api
+      .get("/upload/videos")
+      .then((res) => {
+        const ready = res.data.filter((v) => v.status === "ready");
+>>>>>>> Stashed changes
         setVideoList(ready);
         if (ready.length > 0) setSelected(ready[0]);
       })
-      .catch(err => console.error(err))
+      .catch((err) => console.error(err))
       .finally(() => setLoading(false));
 
     if (window.ethereum) {
+<<<<<<< Updated upstream
+=======
+      window.ethereum.request({ method: "eth_accounts" }).then((accounts) => {
+        if (accounts.length > 0) setWalletAddress(accounts[0]);
+      });
+>>>>>>> Stashed changes
       window.ethereum.on("accountsChanged", (accounts) => {
         setWalletAddress(accounts[0] || null);
       });
@@ -64,9 +77,15 @@ export default function Home() {
         method: "wallet_switchEthereumChain",
         params: [{ chainId: "0xaa36a7" }],
       });
+<<<<<<< Updated upstream
 
       // নতুন করে connect করো
       const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
+=======
+      const accounts = await window.ethereum.request({
+        method: "eth_requestAccounts",
+      });
+>>>>>>> Stashed changes
       setWalletAddress(accounts[0]);
     } catch (err) {
       console.error("Wallet connect error:", err);
@@ -117,7 +136,11 @@ export default function Home() {
             <div>
               <p className="text-white font-semibold text-lg">No broadcasts yet</p>
               <p className="text-neutral-600 text-sm mt-1">
-                Visit <a href="/admin" className="text-blue-500 hover:underline">Admin</a> to upload content
+                Visit{" "}
+                <a href="/admin" className="text-blue-500 hover:underline">
+                  Admin
+                </a>{" "}
+                to upload content
               </p>
             </div>
           </div>
@@ -131,25 +154,18 @@ export default function Home() {
       <Navbar />
 
       <div className="max-w-screen-2xl mx-auto px-4 sm:px-6 py-5 flex flex-col lg:flex-row gap-5">
-
-        {/* LEFT */}
         <div className="flex-1 min-w-0 space-y-4">
-
-          {/* Video Player */}
           <div className="relative rounded-xl overflow-hidden bg-black ring-1 ring-white/10 shadow-2xl shadow-black/60 aspect-video">
             <div className="absolute top-0 left-1/4 right-1/4 h-px bg-gradient-to-r from-transparent via-blue-500/50 to-transparent z-10" />
             <VideoPlayer videoId={selected?.id} onVerify={handleVerify} />
           </div>
 
-          {/* Verification Badge */}
           <VerificationBadge verified={verified} details={verifyDetails} />
 
-          {/* Title */}
           <h1 className="text-xl font-bold text-white leading-snug tracking-tight">
             {selected?.title}
           </h1>
 
-          {/* Publisher Row */}
           <div className="flex items-center justify-between flex-wrap gap-3 pb-4 border-b border-neutral-800/60">
             <div className="flex items-center gap-3">
               <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-blue-700 to-violet-700 flex items-center justify-center text-sm font-bold text-white flex-shrink-0 ring-1 ring-white/10">
@@ -157,14 +173,18 @@ export default function Home() {
               </div>
               <div>
                 <div className="flex items-center gap-2">
-                  <span className="text-sm font-semibold text-white">TrustStream News</span>
+                  <span className="text-sm font-semibold text-white">
+                    TrustStream News
+                  </span>
                   <span className="text-[9px] font-bold text-blue-400 bg-blue-500/10 border border-blue-500/20 px-1.5 py-0.5 rounded-md uppercase tracking-wider">
                     Verified
                   </span>
                 </div>
                 <div className="flex items-center gap-1.5 mt-0.5">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_#4ade80] animate-pulse flex-shrink-0" />
-                  <span className="text-[10px] text-neutral-600 font-mono">Blockchain authenticated</span>
+                  <span className="text-[10px] text-neutral-600 font-mono">
+                    Blockchain authenticated
+                  </span>
                 </div>
               </div>
             </div>
@@ -185,14 +205,12 @@ export default function Home() {
             </div>
           </div>
 
-          {/* Description */}
           {selected?.description && (
             <p className="text-sm text-neutral-500 leading-relaxed">
               {selected.description}
             </p>
           )}
 
-          {/* MetaMask Verify Panel */}
           <div className="rounded-xl bg-neutral-900/60 border border-neutral-800/60 p-4 backdrop-blur-sm space-y-3">
             <div className="flex items-center justify-between flex-wrap gap-3">
               <div className="flex items-center gap-2">
@@ -242,24 +260,38 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Contract Info */}
-            <div className="grid grid-cols-3 gap-2 pt-2 border-t border-neutral-800/60">
+            <div className="grid grid-cols-4 gap-2 pt-2 border-t border-neutral-800/60">
               <div className="bg-neutral-950 rounded-lg p-2.5 border border-neutral-800">
-                <p className="text-[9px] text-neutral-600 uppercase tracking-widest font-mono mb-1">Contract</p>
-                <p className="font-mono text-[9px] text-blue-400 break-all">0x79AC...14BAd</p>
+                <p className="text-[9px] text-neutral-600 uppercase tracking-widest font-mono mb-1">
+                  Contract
+                </p>
+                <p className="font-mono text-[9px] text-blue-400 break-all">
+                  0x79AC...14BAd
+                </p>
               </div>
               <div className="bg-neutral-950 rounded-lg p-2.5 border border-neutral-800">
-                <p className="text-[9px] text-neutral-600 uppercase tracking-widest font-mono mb-1">Network</p>
-                <p className="font-mono text-[9px] text-emerald-400">Sepolia Testnet</p>
+                <p className="text-[9px] text-neutral-600 uppercase tracking-widest font-mono mb-1">
+                  Network
+                </p>
+                <p className="font-mono text-[9px] text-emerald-400">
+                  Sepolia Testnet
+                </p>
               </div>
               <div className="bg-neutral-950 rounded-lg p-2.5 border border-neutral-800">
-                <p className="text-[9px] text-neutral-600 uppercase tracking-widest font-mono mb-1">Orgs</p>
+                <p className="text-[9px] text-neutral-600 uppercase tracking-widest font-mono mb-1">
+                  Orgs
+                </p>
                 <p className="font-mono text-[9px] text-violet-400">3 / 3 Active</p>
+              </div>
+              <div className="bg-neutral-950 rounded-lg p-2.5 border border-neutral-800">
+                <p className="text-[9px] text-neutral-600 uppercase tracking-widest font-mono mb-1">
+                  Storage
+                </p>
+                <p className="font-mono text-[9px] text-orange-400">IPFS + Pinata</p>
               </div>
             </div>
           </div>
 
-          {/* Cryptographic Proof Panel */}
           {verifyDetails && (
             <div className="rounded-xl bg-neutral-900/60 border border-neutral-800/60 p-4 backdrop-blur-sm space-y-3">
               <div className="flex items-center justify-between">
@@ -275,10 +307,21 @@ export default function Home() {
 
               <div className="space-y-2">
                 {[
-                  { label: "Browser", value: verifyDetails.clientHash, color: "text-emerald-500/80" },
-                  { label: "Ledger",  value: verifyDetails.storedHash,  color: "text-blue-400/80" },
+                  {
+                    label: "Browser",
+                    value: verifyDetails.clientHash,
+                    color: "text-emerald-500/80",
+                  },
+                  {
+                    label: "Ledger",
+                    value: verifyDetails.storedHash,
+                    color: "text-blue-400/80",
+                  },
                 ].map(({ label, value, color }) => (
-                  <div key={label} className="flex gap-3 items-start pt-2 border-t border-neutral-800/40 first:border-0 first:pt-0">
+                  <div
+                    key={label}
+                    className="flex gap-3 items-start pt-2 border-t border-neutral-800/40 first:border-0 first:pt-0"
+                  >
                     <span className="font-mono text-[9px] text-neutral-700 uppercase tracking-widest w-12 flex-shrink-0 pt-0.5">
                       {label}
                     </span>
@@ -289,6 +332,35 @@ export default function Home() {
                 ))}
               </div>
 
+              {verifyDetails.ipfsCid && (
+                <div className="pt-3 border-t border-neutral-800/40 space-y-2">
+                  <p className="font-mono text-[9px] text-neutral-700 uppercase tracking-widest">
+                    📌 IPFS Content Address
+                  </p>
+                  <div className="flex items-center justify-between gap-3 bg-neutral-950 rounded-lg px-3 py-2 border border-orange-900/30">
+                    <span className="font-mono text-[10px] text-orange-400 break-all">
+                      {verifyDetails.ipfsCid}
+                    </span>
+                    <a
+                      href={verifyDetails.ipfsUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex-shrink-0 text-[9px] font-semibold text-orange-500 hover:text-orange-400 bg-orange-950/30 border border-orange-800/40 px-2 py-1 rounded transition-colors"
+                    >
+                      View ↗
+                    </a>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="inline-flex items-center gap-1 text-[9px] text-orange-400/70 bg-orange-950/20 border border-orange-900/30 px-2 py-0.5 rounded">
+                      📌 Pinned via Pinata
+                    </span>
+                    <span className="inline-flex items-center gap-1 text-[9px] text-neutral-600 bg-neutral-900 border border-neutral-800 px-2 py-0.5 rounded">
+                      🌐 Publicly accessible
+                    </span>
+                  </div>
+                </div>
+              )}
+
               {verifyDetails.endorsementCount > 0 && (
                 <div className="pt-3 border-t border-neutral-800/40 space-y-2">
                   <p className="font-mono text-[9px] text-neutral-700 uppercase tracking-widest">
@@ -296,17 +368,36 @@ export default function Home() {
                   </p>
                   <div className="flex flex-wrap gap-2">
                     {[
-                      { name: "NewsAgency",  icon: "🏢", min: 1, colors: "text-emerald-400 bg-emerald-950/30 border-emerald-800/40" },
-                      { name: "Broadcaster", icon: "📡", min: 2, colors: "text-blue-400 bg-blue-950/30 border-blue-800/40" },
-                      { name: "Auditor",     icon: "🔍", min: 3, colors: "text-violet-400 bg-violet-950/30 border-violet-800/40" },
-                    ].filter(o => verifyDetails.endorsementCount >= o.min).map(o => (
-                      <span
-                        key={o.name}
-                        className={`inline-flex items-center gap-1.5 text-[10px] font-medium border rounded-md px-2 py-1 ${o.colors}`}
-                      >
-                        {o.icon} {o.name}
-                      </span>
-                    ))}
+                      {
+                        name: "NewsAgency",
+                        icon: "🏢",
+                        min: 1,
+                        colors:
+                          "text-emerald-400 bg-emerald-950/30 border-emerald-800/40",
+                      },
+                      {
+                        name: "Broadcaster",
+                        icon: "📡",
+                        min: 2,
+                        colors: "text-blue-400 bg-blue-950/30 border-blue-800/40",
+                      },
+                      {
+                        name: "Auditor",
+                        icon: "🔍",
+                        min: 3,
+                        colors:
+                          "text-violet-400 bg-violet-950/30 border-violet-800/40",
+                      },
+                    ]
+                      .filter((o) => verifyDetails.endorsementCount >= o.min)
+                      .map((o) => (
+                        <span
+                          key={o.name}
+                          className={`inline-flex items-center gap-1.5 text-[10px] font-medium border rounded-md px-2 py-1 ${o.colors}`}
+                        >
+                          {o.icon} {o.name}
+                        </span>
+                      ))}
                   </div>
                 </div>
               )}
@@ -314,10 +405,11 @@ export default function Home() {
           )}
         </div>
 
-        {/* RIGHT: Sidebar */}
         <div className="lg:w-80 xl:w-[340px] flex-shrink-0 space-y-1 lg:max-h-[calc(100vh-80px)] lg:overflow-y-auto lg:pr-1">
           <div className="flex items-center gap-2 px-1 mb-3">
-            <span className="text-[9px] font-bold text-neutral-700 uppercase tracking-widest">📡 Live Feed</span>
+            <span className="text-[9px] font-bold text-neutral-700 uppercase tracking-widest">
+              📡 Live Feed
+            </span>
             <div className="flex-1 h-px bg-neutral-800/60" />
           </div>
 
@@ -347,7 +439,11 @@ export default function Home() {
                 </div>
 
                 <div className="flex-1 min-w-0 space-y-1.5 py-0.5">
-                  <p className={`text-[12.5px] font-medium leading-snug line-clamp-2 ${isActive ? "text-white" : "text-neutral-400"}`}>
+                  <p
+                    className={`text-[12.5px] font-medium leading-snug line-clamp-2 ${
+                      isActive ? "text-white" : "text-neutral-400"
+                    }`}
+                  >
                     {v.title}
                   </p>
                   <p className="text-[10px] text-neutral-700">TrustStream News</p>
@@ -356,14 +452,15 @@ export default function Home() {
                       {v.total_segments} segs
                     </span>
                     <span className="text-neutral-800 text-[10px]">·</span>
-                    <span className="text-[10px] text-neutral-700">{timeAgo(v.created_at)}</span>
+                    <span className="text-[10px] text-neutral-700">
+                      {timeAgo(v.created_at)}
+                    </span>
                   </div>
                 </div>
               </button>
             );
           })}
         </div>
-
       </div>
     </div>
   );
