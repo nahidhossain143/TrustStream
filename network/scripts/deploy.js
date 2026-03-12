@@ -2,51 +2,33 @@ const hre = require("hardhat");
 const fs = require("fs");
 
 async function main() {
-  const signers = await hre.ethers.getSigners();
+  const [deployer] = await hre.ethers.getSigners();
+  console.log("🏢 Deploying with account:", deployer.address);
 
-  // 3 organizations using Hardhat accounts
-  const newsAgency   = signers[0]; // Account #0
-  const broadcaster  = signers[1]; // Account #1
-  const auditor      = signers[2]; // Account #2
-
-  console.log("🏢 Deploying with organizations:");
-  console.log("  NewsAgency:  ", newsAgency.address);
-  console.log("  Broadcaster: ", broadcaster.address);
-  console.log("  Auditor:     ", auditor.address);
+  const newsAgency  = "0x13EF2Ab9b77e3c9c4B1B654190320C94d3296A09";
+  const broadcaster = "0x792C62F52B2E6451C10F76619c785Bf1133A5869";
+  const auditor     = "0x91F82a580C5aAb605AC39c18a56B36f047A84c11";
 
   const TrustStream = await hre.ethers.getContractFactory("TrustStream");
-  const contract = await TrustStream.deploy(
-    newsAgency.address,
-    broadcaster.address,
-    auditor.address
-  );
-  await contract.waitForDeployment();
+  const contract = await TrustStream.deploy(newsAgency, broadcaster, auditor);
 
+  await contract.waitForDeployment();
   const address = await contract.getAddress();
   console.log("\n✅ TrustStream deployed to:", address);
 
-  // Save deployment info for backend
   const deploymentInfo = {
     address,
     organizations: {
-      newsAgency:  { address: newsAgency.address,  privateKey: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" },
-      broadcaster: { address: broadcaster.address, privateKey: "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d" },
-      auditor:     { address: auditor.address,     privateKey: "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a" },
+      newsAgency:  { address: newsAgency  },
+      broadcaster: { address: broadcaster },
+      auditor:     { address: auditor     },
     },
-    network: "localhost",
-    chainId: 31337,
+    network: "sepolia",
+    chainId: 11155111,
   };
 
-  fs.writeFileSync(
-    "deployment.json",
-    JSON.stringify(deploymentInfo, null, 2)
-  );
-
+  fs.writeFileSync("deployment.json", JSON.stringify(deploymentInfo, null, 2));
   console.log("📄 Deployment info saved to deployment.json");
-  console.log("\n🏢 Organizations registered:");
-  console.log("  Org1 — NewsAgency   (submits & endorses)");
-  console.log("  Org2 — Broadcaster  (endorses)");
-  console.log("  Org3 — Auditor      (endorses)");
 }
 
 main().catch((error) => {
