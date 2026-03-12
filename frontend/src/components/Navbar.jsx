@@ -1,25 +1,50 @@
 import { useState, useEffect } from "react";
-import { connectWallet, getWalletAddress, onAccountChange, onChainChange } from "../services/wallet";
+import { onAccountChange, onChainChange } from "../services/wallet";
 
 export default function Navbar() {
   const [address, setAddress] = useState(null);
   const [connecting, setConnecting] = useState(false);
 
   useEffect(() => {
-    // Page load এ already connected কিনা check করো
-    getWalletAddress().then((addr) => setAddress(addr));
+    // Page load এ wallet সবসময় disconnect — auto-connect নেই
+    setAddress(null);
 
     // Account change listen করো
-    onAccountChange((addr) => setAddress(addr));
+    onAccountChange((addr) => setAddress(addr || null));
 
-    // Chain change listen করো
-    onChainChange(() => getWalletAddress().then((addr) => setAddress(addr)));
+    // Chain change এ disconnect করো
+    onChainChange(() => setAddress(null));
   }, []);
 
   const handleConnect = async () => {
+    if (!window.ethereum) {
+      alert("MetaMask installed নেই!");
+      return;
+    }
     setConnecting(true);
-    const addr = await connectWallet();
-    setAddress(addr);
+    try {
+      // আগের permission revoke করো
+      try {
+        await window.ethereum.request({
+          method: "wallet_revokePermissions",
+          params: [{ eth_accounts: {} }],
+        });
+      } catch (e) {
+        console.log("Revoke not supported, continuing...");
+      }
+
+      // Sepolia network এ switch করো
+      await window.ethereum.request({
+        method: "wallet_switchEthereumChain",
+        params: [{ chainId: "0xaa36a7" }],
+      });
+
+      // নতুন করে connect করো
+      const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
+      setAddress(accounts[0] || null);
+    } catch (err) {
+      console.error("Wallet connect error:", err);
+    }
     setConnecting(false);
   };
 
@@ -31,7 +56,6 @@ export default function Navbar() {
       <h1 className="text-2xl font-bold tracking-wide text-white">
         TrustStream
       </h1>
-
       <div className="flex items-center gap-4">
         <span className="px-3 py-1 bg-red-600 text-xs font-semibold rounded-full animate-pulse">
           LIVE
