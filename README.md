@@ -1,7 +1,7 @@
 # TrustStream 📡
 ### Decentralized Trust and Provenance for C2PA-Compliant Digital News Streaming
 
-> A research-based, tamper-resistant digital news platform integrating **Ethereum Blockchain (Sepolia Testnet)**, **SHA-256 Chain Hashing**, and **HLS Streaming** to verify the authenticity of every video segment in real-time.
+> A research-based, tamper-resistant digital news platform integrating **Ethereum Blockchain (Sepolia Testnet)**, **IPFS (Pinata)**, **SHA-256 Chain Hashing**, and **HLS Streaming** to verify the authenticity of every video segment in real-time.
 
 **Institution:** Ahsanullah University of Science and Technology (AUST)
 **Program:** B.Sc. in Computer Science and Engineering
@@ -39,7 +39,8 @@ The rapid advancement of Generative AI and deepfakes has made it increasingly di
 - Moving away from centralized trust to a **multi-organization consortium** (NewsAgency, Broadcaster, Auditor)
 - Integrating **Ethereum Sepolia Testnet** to create an immutable, publicly verifiable record of media provenance
 - Using **SHA-256 chain hashing** to link video segments — tampering any segment breaks the entire chain
-- Providing **real-time dual verification** (Database + Blockchain) during video playback
+- Storing every generated video segment on **IPFS via Pinata** for decentralized, content-addressed proof storage
+- Providing **real-time multi-layer verification** (Database + Blockchain + IPFS proof visibility) during video playback
 - **MetaMask integration** — users can verify on-chain directly from the browser
 
 ---
@@ -48,30 +49,30 @@ The rapid advancement of Generative AI and deepfakes has made it increasingly di
 
 | Gap | Description | How TrustStream Addresses It |
 |-----|-------------|------------------------------|
-| G1 | Lack of empirical validation for news processing workloads | Benchmarkable pipeline with PostgreSQL + Blockchain metrics |
+| G1 | Lack of empirical validation for news processing workloads | Benchmarkable pipeline with PostgreSQL + Blockchain + IPFS metrics |
 | G2 | Centralized trust models incompatible with multi-org consortia | 3-org endorsement system (NewsAgency → Broadcaster → Auditor) |
-| G3 | Verification latency as media volume increases | Browser-side hashing + async sequential blockchain calls |
+| G3 | Verification latency as media volume increases | Browser-side hashing + async sequential blockchain calls + local HLS fallback |
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                          TrustStream                            │
-├───────────────┬─────────────────────────┬───────────────────────┤
-│   Frontend    │        Backend          │    Blockchain         │
-│  React.js     │   Node.js + Express     │  Sepolia Testnet      │
-│  Tailwind CSS │   FFmpeg + SHA-256      │  3-Org Consortium     │
-│  hls.js       │   PostgreSQL (Neon)     │  TrustStream.sol      │
-│  MetaMask     │   Web3.js               │  Remix Verified       │
-└───────┬───────┴──────────┬──────────────┴────────┬──────────────┘
-        │                  │                        │
-        ▼                  ▼                        ▼
-   Video Player      Segment Hashes          Immutable Ledger
-   Hash Compute      Chain Linking           3-Org Endorsement
-   Dual Verify       Audit Logging           Transaction Log
-   MetaMask UI       Neon Cloud DB           Etherscan Public
+┌──────────────────────────────────────────────────────────────────────────┐
+│                              TrustStream                                 │
+├───────────────┬──────────────────────────┬───────────────────────────────┤
+│   Frontend    │         Backend          │      Decentralized Layers     │
+│  React.js     │   Node.js + Express      │  Ethereum Sepolia Testnet     │
+│  Tailwind CSS │   FFmpeg + SHA-256       │  IPFS via Pinata              │
+│  hls.js       │   PostgreSQL (Neon)      │  TrustStream.sol              │
+│  MetaMask     │   Web3.js + Axios        │  3-Org Consortium             │
+└───────┬───────┴──────────┬───────────────┴──────────────┬────────────────┘
+        │                  │                               │
+        ▼                  ▼                               ▼
+   Video Player      Segment Hashes               Immutable Ledger
+   Hash Compute      Chain Linking                3-Org Endorsement
+   Triple Verify     Audit Logging                IPFS Content CID
+   MetaMask UI       Neon Cloud DB                Etherscan Public
 ```
 
 **Upload Flow:**
@@ -81,17 +82,22 @@ Admin uploads MP4
   → SHA-256 hash per segment
   → Chain hash: SHA-256(currentHash + prevHash)
   → Save to PostgreSQL (Neon Cloud)
-  → Register on Blockchain — NewsAgency (Sepolia)
-  → Endorse — Broadcaster (Sepolia)
-  → Endorse — Auditor (Sepolia)
+  → Response sent immediately ✅ (video playable right away)
+  → [Background]:
+       → Upload each segment to IPFS via Pinata → store CID in DB
+       → Upload video metadata JSON to IPFS
+       → Register on Blockchain — NewsAgency (Sepolia)
+       → Endorse — Broadcaster (Sepolia)
+       → Endorse — Auditor (Sepolia)
 ```
 
 **Verification Flow:**
 ```
-Browser downloads segment
+Browser downloads segment (local HLS stream)
   → Compute SHA-256 locally (Web Crypto API)
-  → Compare with PostgreSQL hash  ✅/❌
-  → Compare with Blockchain hash  ✅/❌
+  → Compare with PostgreSQL hash       ✅/❌
+  → Compare with Blockchain hash       ✅/❌
+  → Show IPFS CID + Pinata gateway link ✅
   → Show dual verification badge (DB + Blockchain 3/3 orgs)
 ```
 
@@ -102,16 +108,17 @@ Browser downloads segment
 | Layer | Technology |
 |-------|-----------|
 | Frontend | React.js, Tailwind CSS, hls.js, Web Crypto API |
-| Backend | Node.js, Express.js, multer |
+| Backend | Node.js, Express.js, multer, axios |
 | Database | PostgreSQL (Neon Cloud) |
 | Video Processing | FFmpeg (HLS segmentation) |
 | Hashing | SHA-256 (Node.js crypto + Web Crypto API) |
+| Decentralized Storage | IPFS via Pinata (segment pinning + metadata) |
 | Blockchain | Solidity ^0.8.0, Web3.js, Alchemy RPC |
 | Smart Contract | TrustStream.sol (3-org endorsement system) |
 | Testnet | Ethereum Sepolia |
 | Wallet | MetaMask |
 | Contract Deploy | Remix IDE |
-| Streaming | HLS (HTTP Live Streaming) |
+| Streaming | HLS (HTTP Live Streaming) — local server |
 
 ---
 
@@ -158,7 +165,11 @@ PRIVATE_KEY=your_newsagency_private_key
 BROADCASTER_KEY=your_broadcaster_private_key
 AUDITOR_KEY=your_auditor_private_key
 CONTRACT_ADDRESS=0x79AC56F7dF74abD253E07c16CB3B29060B114BAd
+PINATA_JWT=your_pinata_jwt_token
+IPFS_GATEWAY=https://gateway.pinata.cloud/ipfs
 ```
+
+> 💡 **Pinata JWT** পেতে: [app.pinata.cloud/keys](https://app.pinata.cloud/keys) → New Key → `pinFileToIPFS` + `pinJSONToIPFS` permissions চালু করো → JWT copy করো।
 
 ---
 
@@ -217,6 +228,7 @@ npm run dev
 | Frontend | http://localhost:5173 | Terminal 2 |
 | Blockchain | Sepolia Testnet (public) | Always live ✅ |
 | Database | Neon Cloud (public) | Always live ✅ |
+| IPFS Storage | Pinata (public) | Always live ✅ |
 
 ---
 
@@ -226,7 +238,8 @@ npm run dev
 2. **No redeploy needed** — contract address is fixed: `0x79AC56F7dF74abD253E07c16CB3B29060B114BAd`
 3. **Database is persistent** — Neon Cloud, no local setup needed
 4. **MetaMask must be on Sepolia** to interact with the contract
-5. Blockchain registration happens **in background** — video is immediately playable after upload
+5. **Video plays immediately** after upload — IPFS pinning and blockchain endorsement run in background
+6. **IPFS CID** appears in the verification panel after background pinning completes
 
 ---
 
@@ -239,9 +252,9 @@ npm run dev
 
 ```env
 ALCHEMY_API_KEY=your_alchemy_api_key
-PRIVATE_KEY=your_newsagency_private_key        # NewsAgency wallet
-BROADCASTER_KEY=your_broadcaster_private_key   # Broadcaster wallet
-AUDITOR_KEY=your_auditor_private_key           # Auditor wallet
+PRIVATE_KEY=your_newsagency_private_key
+BROADCASTER_KEY=your_broadcaster_private_key
+AUDITOR_KEY=your_auditor_private_key
 ```
 
 #### Step 2 — Install network dependencies
@@ -278,17 +291,13 @@ npx hardhat run scripts/deploy.js --network sepolia
 📄 Deployment info saved to deployment.json
 ```
 
-#### Step 5 — Update backend/.env with new contract address
+#### Step 5 — Update backend/.env
 
 ```env
 CONTRACT_ADDRESS=0xNewContractAddress
 ```
 
-Then restart the backend server:
-```bash
-cd backend
-node src/server.js
-```
+Then restart the backend server.
 
 ---
 
@@ -299,13 +308,15 @@ node src/server.js
 2. Enter a news title and optional description
 3. Select an MP4 video file
 4. Click **Upload & Generate Hashes**
-5. Wait for processing — backend terminal will show:
+5. Video is immediately playable. Backend terminal will show background progress:
    ```
-   ⛓️  Starting blockchain registration...
-   ⛓️  Video "title" registered on blockchain ✅
+   📌 Starting IPFS + blockchain registration for video xxx...
+   📌 Video metadata CID: bafkrei...
+   📌 IPFS: seg_000.ts → bafybei...
+   📌 IPFS: seg_001.ts → bafybei...
    ⛓️  Segment 0: registered + endorsed by 3 orgs ✅
    ⛓️  Segment 1: registered + endorsed by 3 orgs ✅
-   ✅ All segments registered on blockchain
+   ✅ IPFS + blockchain complete for video xxx
    ```
 
 ### Watch & Verify (Home)
@@ -313,13 +324,15 @@ node src/server.js
 2. Connect MetaMask wallet (Sepolia network)
 3. Select a video from the sidebar
 4. As each segment plays, the browser computes its SHA-256 hash
-5. Two verifications happen automatically:
+5. Three verifications happen automatically:
    - 🗄️ **Database** — checks against PostgreSQL stored hash
-   - ⛓️ **Blockchain** — checks against Sepolia immutable ledger
+   - ⛓️ **Blockchain** — checks against Sepolia immutable ledger (3/3 orgs)
+   - 📌 **IPFS** — shows content-addressed CID with Pinata gateway link
 6. Results shown:
    - 🛡️ **Authentic & Verified** — hash matches, 3/3 orgs endorsed
    - ⚠️ **Tampered** — hash mismatch detected
 7. Click **Etherscan** to view contract on public explorer
+8. Click **View ↗** on IPFS CID to access segment on Pinata gateway
 
 ---
 
@@ -327,12 +340,14 @@ node src/server.js
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/api/upload` | Upload video → segment → hash → store |
+| `POST` | `/api/upload` | Upload video → segment → hash → store → IPFS + blockchain (background) |
 | `GET` | `/api/upload/videos` | List all uploaded videos |
-| `GET` | `/api/upload/videos/:id/segments` | Get all segment hashes for a video |
-| `POST` | `/api/upload/verify` | Verify segment hash (DB + Blockchain) |
+| `GET` | `/api/upload/videos/:id/segments` | Get all segment hashes + IPFS CIDs for a video |
+| `GET` | `/api/upload/videos/:id/playlist` | Dynamic M3U8 playlist (local stream) |
+| `GET` | `/api/upload/ipfs/:videoId/:segmentIndex` | Get IPFS CID + gateway URLs for a segment |
+| `POST` | `/api/upload/verify` | Verify segment hash (DB + Blockchain), returns IPFS CID |
 | `GET` | `/api/upload/blockchain/video/:videoId` | Get on-chain video metadata |
-| `GET` | `/api/upload/blockchain/endorsements/:videoId/:segmentIndex` | Get endorsement list for a segment |
+| `GET` | `/api/upload/blockchain/endorsements/:videoId/:segmentIndex` | Get endorsement list |
 | `GET` | `/api/upload/blockchain/txlogs` | Get recent blockchain transaction logs |
 
 ---
@@ -346,15 +361,17 @@ TrustStream/
 │   │   ├── config/
 │   │   │   ├── db.js                  # PostgreSQL (Neon Cloud) connection
 │   │   │   ├── blockchain.js          # Web3 + Contract ABI + Sepolia setup
-│   │   │   └── schema.sql             # Database schema (3 tables)
+│   │   │   └── schema.sql             # Database schema (3 tables + ipfs_cid column)
 │   │   ├── models/
-│   │   │   └── video.model.js         # DB query functions
+│   │   │   └── video.model.js         # DB query functions (incl. updateSegmentIPFS)
 │   │   ├── services/
-│   │   │   └── blockchain.service.js  # registerVideo, registerAndEndorse, verify
+│   │   │   ├── blockchain.service.js  # registerVideo, registerAndEndorse, verify
+│   │   │   └── ipfs.service.js        # uploadSegmentToIPFS, uploadMetadataToIPFS
 │   │   ├── routes/
 │   │   │   └── upload.routes.js       # All API endpoints
 │   │   └── server.js                  # Express server entry point
 │   ├── .env                           # Environment variables (not committed)
+│   ├── .env.example                   # Environment variable template
 │   └── public/
 │       ├── uploads/                   # Temporary uploaded files
 │       └── streams/                   # Generated HLS segments (.ts files)
@@ -402,6 +419,37 @@ The `TrustStream.sol` contract implements a **3-organization consortium endorsem
 
 ---
 
+## System Architecture — 4-Layer Trust Model
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    TrustStream Trust Layers                 │
+├─────────────────────────────────────────────────────────────┤
+│  Layer 1 — IPFS (Pinata)                                    │
+│  Decentralized content-addressed storage                    │
+│  Each segment pinned with immutable CID                     │
+│  Publicly accessible via gateway                            │
+├─────────────────────────────────────────────────────────────┤
+│  Layer 2 — Ethereum Blockchain (Sepolia)                    │
+│  Immutable cryptographic provenance                         │
+│  SHA-256 hash + chain hash per segment                      │
+│  3-org consortium endorsement                               │
+├─────────────────────────────────────────────────────────────┤
+│  Layer 3 — PostgreSQL (Neon Cloud)                          │
+│  Fast indexing and retrieval                                │
+│  Stores hashes + IPFS CIDs for quick lookup                 │
+│  Source of truth reconstructible from blockchain            │
+├─────────────────────────────────────────────────────────────┤
+│  Layer 4 — Browser (Client-side)                            │
+│  Independent SHA-256 verification via Web Crypto API        │
+│  No trust in server — hash computed locally                 │
+└─────────────────────────────────────────────────────────────┘
+```
+
+> **Design Note:** PostgreSQL serves as a lightweight indexing cache for query efficiency. The cryptographic source of truth is the Ethereum blockchain (hash integrity + endorsements) and IPFS (content storage). In principle, indexed records can be re-derived from blockchain events and IPFS content.
+
+---
+
 ## Blockchain Info
 
 | Item | Value |
@@ -414,3 +462,13 @@ The `TrustStream.sol` contract implements a **3-organization consortium endorsem
 | Deploy Tool | Remix IDE |
 | RPC Provider | Alchemy |
 | Chain ID | 11155111 |
+
+## IPFS Info
+
+| Item | Value |
+|------|-------|
+| Pinning Service | Pinata |
+| Gateway | https://gateway.pinata.cloud/ipfs/ |
+| Public IPFS Gateway | https://ipfs.io/ipfs/ |
+| Dashboard | [app.pinata.cloud/files](https://app.pinata.cloud/files) |
+| Content | Video segments (.ts) + metadata JSON per video |
