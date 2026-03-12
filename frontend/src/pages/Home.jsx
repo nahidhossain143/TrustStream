@@ -13,19 +13,12 @@ export default function Home() {
   const [walletAddress, setWalletAddress] = useState(null);
 
   useEffect(() => {
-<<<<<<< Updated upstream
-    // Page load এ wallet সবসময় disconnect থাকবে
     setWalletAddress(null);
 
-    api.get("/upload/videos")
-      .then(res => {
-        const ready = res.data.filter(v => v.status === "ready");
-=======
     api
       .get("/upload/videos")
       .then((res) => {
         const ready = res.data.filter((v) => v.status === "ready");
->>>>>>> Stashed changes
         setVideoList(ready);
         if (ready.length > 0) setSelected(ready[0]);
       })
@@ -33,12 +26,6 @@ export default function Home() {
       .finally(() => setLoading(false));
 
     if (window.ethereum) {
-<<<<<<< Updated upstream
-=======
-      window.ethereum.request({ method: "eth_accounts" }).then((accounts) => {
-        if (accounts.length > 0) setWalletAddress(accounts[0]);
-      });
->>>>>>> Stashed changes
       window.ethereum.on("accountsChanged", (accounts) => {
         setWalletAddress(accounts[0] || null);
       });
@@ -61,31 +48,23 @@ export default function Home() {
       return;
     }
     try {
-      // আগের permission revoke করো — প্রতিবার MetaMask popup আসবে
       try {
         await window.ethereum.request({
           method: "wallet_revokePermissions",
           params: [{ eth_accounts: {} }],
         });
       } catch (revokeErr) {
-        // পুরনো MetaMask version এ revoke support নেই — skip করো
         console.log("Revoke not supported, continuing...");
       }
 
-      // Sepolia network এ switch করো
       await window.ethereum.request({
         method: "wallet_switchEthereumChain",
         params: [{ chainId: "0xaa36a7" }],
       });
-<<<<<<< Updated upstream
 
-      // নতুন করে connect করো
-      const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
-=======
       const accounts = await window.ethereum.request({
         method: "eth_requestAccounts",
       });
->>>>>>> Stashed changes
       setWalletAddress(accounts[0]);
     } catch (err) {
       console.error("Wallet connect error:", err);
