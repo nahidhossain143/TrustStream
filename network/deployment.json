@@ -1,19 +1,16 @@
 {
-  "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+  "address": "0x4bFaE5c7712F5bf2811e3Be68Ff7bD6f107386c8",
   "organizations": {
     "newsAgency": {
-      "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
-      "privateKey": "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+      "address": "0x13EF2Ab9b77e3c9c4B1B654190320C94d3296A09"
     },
     "broadcaster": {
-      "address": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
-      "privateKey": "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
+      "address": "0x792C62F52B2E6451C10F76619c785Bf1133A5869"
     },
     "auditor": {
-      "address": "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC",
-      "privateKey": "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a"
+      "address": "0x91F82a580C5aAb605AC39c18a56B36f047A84c11"
     }
   },
-  "network": "localhost",
-  "chainId": 31337
+  "network": "sepolia",
+  "chainId": 11155111
 }
