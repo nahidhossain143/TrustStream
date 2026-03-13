@@ -1,20 +1,26 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import Hls from "hls.js";
 import api from "../services/api";
 import { generateSHA256 } from "../utils/hash";
 
-export default function VideoPlayer({ videoId, onVerify }) {
+export default function VideoPlayer({ videoId, playlistUrl, onVerify }) {
   const videoRef = useRef(null);
-  const [currentSegment, setCurrentSegment] = useState(null);
   const activeSegmentRef = useRef(null);
   const verificationCache = useRef({});
+  const onVerifyRef = useRef(onVerify);
 
   useEffect(() => {
-    if (!videoId) return;
+    onVerifyRef.current = onVerify;
+  }, [onVerify]);
+
+  useEffect(() => {
+    if (!videoId || !playlistUrl) return;
+
     const video = videoRef.current;
     if (!video) return;
 
-    const playlistUrl = `http://localhost:3001/streams/${videoId}/playlist.m3u8`;
+    verificationCache.current = {};
+    activeSegmentRef.current = null;
 
     if (Hls.isSupported()) {
       const hls = new Hls({
@@ -46,7 +52,9 @@ export default function VideoPlayer({ videoId, onVerify }) {
             storedHash: verifyRes.data.storedHash,
             ipfsCid: verifyRes.data.ipfsCid,
             ipfsUrl: verifyRes.data.ipfsUrl,
+            blockchainAvailable: bc ? bc.available : false,
             blockchainVerified: bc ? bc.hashMatch : null,
+            blockchainError: bc?.error || null,
             fullyEndorsed: bc ? bc.fullyEndorsed : null,
             endorsementCount: bc ? bc.endorsementCount : null,
           };
@@ -55,41 +63,47 @@ export default function VideoPlayer({ videoId, onVerify }) {
           verificationCache.current[segmentIndex] = { status, data: resultData };
 
           if (activeSegmentRef.current === segmentIndex) {
-            onVerify(status, resultData);
+            onVerifyRef.current(status, resultData);
           }
         } catch (err) {
           console.error("Verification error:", err);
+
           verificationCache.current[segmentIndex] = {
-            status: "tampered",
-            data: { segmentIndex },
+            status: "warning",
+            data: {
+              segmentIndex,
+              blockchainAvailable: false,
+              blockchainError: "Verification service temporarily unavailable",
+            },
           };
 
           if (activeSegmentRef.current === segmentIndex) {
-            onVerify("tampered", { segmentIndex });
+            onVerifyRef.current("warning", {
+              segmentIndex,
+              blockchainAvailable: false,
+              blockchainError: "Verification service temporarily unavailable",
+            });
           }
         }
       });
 
       hls.on(Hls.Events.FRAG_CHANGED, (event, data) => {
         const playingIndex = data.frag.sn;
-
         activeSegmentRef.current = playingIndex;
-        setCurrentSegment(playingIndex);
 
         const cachedResult = verificationCache.current[playingIndex];
-
         if (cachedResult) {
-          onVerify(cachedResult.status, cachedResult.data);
+          onVerifyRef.current(cachedResult.status, cachedResult.data);
         } else {
-          onVerify("checking", { segmentIndex: playingIndex });
+          onVerifyRef.current("checking", { segmentIndex: playingIndex });
         }
       });
 
       return () => hls.destroy();
-    } else {
-      video.src = playlistUrl;
     }
-  }, [videoId]);
+
+    video.src = playlistUrl;
+  }, [videoId, playlistUrl]);
 
   return (
     <video

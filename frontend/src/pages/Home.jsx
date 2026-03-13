@@ -4,6 +4,8 @@ import Navbar from "../components/Navbar";
 import VideoPlayer from "../components/VideoPlayer";
 import VerificationBadge from "../components/VerificationBadge";
 
+const CONTRACT_ADDRESS = import.meta.env.VITE_CONTRACT_ADDRESS || "";
+
 export default function Home() {
   const [videoList, setVideoList] = useState([]);
   const [selected, setSelected] = useState(null);
@@ -18,14 +20,17 @@ export default function Home() {
     api
       .get("/upload/videos")
       .then((res) => {
-        const ready = res.data.filter((v) => v.status === "ready");
-        setVideoList(ready);
-        if (ready.length > 0) setSelected(ready[0]);
+        setVideoList(res.data);
+        if (res.data.length > 0) setSelected(res.data[0]);
       })
       .catch((err) => console.error(err))
       .finally(() => setLoading(false));
 
     if (window.ethereum) {
+      window.ethereum.request({ method: "eth_accounts" }).then((accounts) => {
+        if (accounts.length > 0) setWalletAddress(accounts[0]);
+      });
+
       window.ethereum.on("accountsChanged", (accounts) => {
         setWalletAddress(accounts[0] || null);
       });
@@ -47,16 +52,8 @@ export default function Home() {
       alert("MetaMask installed নেই!");
       return;
     }
-    try {
-      try {
-        await window.ethereum.request({
-          method: "wallet_revokePermissions",
-          params: [{ eth_accounts: {} }],
-        });
-      } catch (revokeErr) {
-        console.log("Revoke not supported, continuing...");
-      }
 
+    try {
       await window.ethereum.request({
         method: "wallet_switchEthereumChain",
         params: [{ chainId: "0xaa36a7" }],
@@ -65,6 +62,7 @@ export default function Home() {
       const accounts = await window.ethereum.request({
         method: "eth_requestAccounts",
       });
+
       setWalletAddress(accounts[0]);
     } catch (err) {
       console.error("Wallet connect error:", err);
@@ -78,7 +76,12 @@ export default function Home() {
   };
 
   const timeAgo = (dateStr) => {
-    const diff = (Date.now() - new Date(dateStr)) / 1000;
+    const source =
+      typeof dateStr === "number" && dateStr < 1_000_000_000_000
+        ? dateStr * 1000
+        : dateStr;
+
+    const diff = (Date.now() - new Date(source)) / 1000;
     if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
     if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
     return `${Math.floor(diff / 86400)}d ago`;
@@ -136,7 +139,11 @@ export default function Home() {
         <div className="flex-1 min-w-0 space-y-4">
           <div className="relative rounded-xl overflow-hidden bg-black ring-1 ring-white/10 shadow-2xl shadow-black/60 aspect-video">
             <div className="absolute top-0 left-1/4 right-1/4 h-px bg-gradient-to-r from-transparent via-blue-500/50 to-transparent z-10" />
-            <VideoPlayer videoId={selected?.id} onVerify={handleVerify} />
+            <VideoPlayer
+              videoId={selected?.id}
+              playlistUrl={selected ? `http://localhost:3001${selected.playlistUrl}` : null}
+              onVerify={handleVerify}
+            />
           </div>
 
           <VerificationBadge verified={verified} details={verifyDetails} />
@@ -170,9 +177,9 @@ export default function Home() {
 
             <div className="flex items-center gap-2">
               {[
-                { icon: "🎬", label: `${selected?.total_segments ?? 0} segs` },
-                { icon: "⏱", label: formatDuration(selected?.duration_seconds) },
-                { icon: "📅", label: timeAgo(selected?.created_at) },
+                { icon: "🎬", label: `${selected?.totalSegments ?? 0} segs` },
+                { icon: "⏱", label: formatDuration((selected?.totalSegments ?? 0) * 2) },
+                { icon: "📅", label: timeAgo(selected?.registeredAt) },
               ].map(({ icon, label }) => (
                 <span
                   key={label}
@@ -228,14 +235,16 @@ export default function Home() {
                   </button>
                 )}
 
-                <a
-                  href="https://sepolia.etherscan.io/address/0x79AC56F7dF74abD253E07c16CB3B29060B114BAd"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg transition-all"
-                >
-                  🔍 Etherscan
-                </a>
+                {CONTRACT_ADDRESS && (
+                  <a
+                    href={`https://sepolia.etherscan.io/address/${CONTRACT_ADDRESS}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg transition-all"
+                  >
+                    🔍 Etherscan
+                  </a>
+                )}
               </div>
             </div>
 
@@ -245,7 +254,9 @@ export default function Home() {
                   Contract
                 </p>
                 <p className="font-mono text-[9px] text-blue-400 break-all">
-                  0x79AC...14BAd
+                  {CONTRACT_ADDRESS
+                    ? `${CONTRACT_ADDRESS.slice(0, 6)}...${CONTRACT_ADDRESS.slice(-5)}`
+                    : "Set VITE_CONTRACT_ADDRESS"}
                 </p>
               </div>
               <div className="bg-neutral-950 rounded-lg p-2.5 border border-neutral-800">
@@ -271,6 +282,12 @@ export default function Home() {
             </div>
           </div>
 
+          {selected?.ipfsStatus !== "uploaded" && (
+            <div className="rounded-xl bg-amber-950/20 border border-amber-700/20 p-4 text-sm text-amber-200/80">
+              IPFS pinning is still running in background. Local playback is available immediately; IPFS proofs will appear after upload completes.
+            </div>
+          )}
+
           {verifyDetails && (
             <div className="rounded-xl bg-neutral-900/60 border border-neutral-800/60 p-4 backdrop-blur-sm space-y-3">
               <div className="flex items-center justify-between">
@@ -280,7 +297,7 @@ export default function Home() {
                   <div className="flex-1 h-px bg-neutral-800/80 ml-1" />
                 </div>
                 <span className="font-mono text-[9px] text-neutral-700">
-                  seg_{String(verifyDetails.segmentIndex).padStart(3, "0")}
+                  seg_{String(verifyDetails.segmentIndex ?? 0).padStart(3, "0")}
                 </span>
               </div>
 
@@ -410,7 +427,7 @@ export default function Home() {
                     {isActive ? "▶️" : "📰"}
                   </div>
                   <span className="absolute bottom-1.5 right-1.5 bg-black/80 text-neutral-300 font-mono text-[9px] px-1.5 py-0.5 rounded">
-                    {formatDuration(v.duration_seconds)}
+                    {formatDuration((v.totalSegments ?? 0) * 2)}
                   </span>
                   {isActive && (
                     <div className="absolute inset-0 border border-blue-500/40 rounded-lg" />
@@ -428,11 +445,11 @@ export default function Home() {
                   <p className="text-[10px] text-neutral-700">TrustStream News</p>
                   <div className="flex items-center gap-1.5">
                     <span className="font-mono text-[9px] text-neutral-700 bg-neutral-900 border border-neutral-800 px-1.5 py-0.5 rounded">
-                      {v.total_segments} segs
+                      {v.totalSegments} segs
                     </span>
                     <span className="text-neutral-800 text-[10px]">·</span>
                     <span className="text-[10px] text-neutral-700">
-                      {timeAgo(v.created_at)}
+                      {timeAgo(v.registeredAt)}
                     </span>
                   </div>
                 </div>

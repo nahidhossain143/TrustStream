@@ -115,9 +115,7 @@ export default function Admin() {
             </label>
             <label
               className={`flex items-center gap-4 w-full bg-neutral-800 border border-dashed rounded-xl px-4 py-4 cursor-pointer transition ${
-                file
-                  ? "border-blue-500/40 bg-blue-500/5"
-                  : "border-neutral-700 hover:border-neutral-600"
+                file ? "border-blue-500/40 bg-blue-500/5" : "border-neutral-700 hover:border-neutral-600"
               } ${isDisabled ? "opacity-40 pointer-events-none" : ""}`}
             >
               <div className="w-9 h-9 rounded-lg bg-neutral-700 flex items-center justify-center text-lg flex-shrink-0">
@@ -178,21 +176,14 @@ export default function Admin() {
             <div className="bg-neutral-800/60 border border-neutral-700/60 rounded-xl p-4 space-y-3">
               <div className="flex items-center gap-2.5">
                 <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin flex-shrink-0" />
-                <span className="text-sm font-medium text-blue-400">
-                  Processing pipeline running...
-                </span>
+                <span className="text-sm font-medium text-blue-400">Processing pipeline running...</span>
               </div>
-
               <div className="space-y-2">
                 {steps.map((step, i) => (
                   <div
                     key={i}
                     className={`flex items-center gap-2.5 text-xs transition-all ${
-                      step.done
-                        ? "text-emerald-400"
-                        : step.active
-                        ? "text-yellow-400"
-                        : "text-neutral-600"
+                      step.done ? "text-emerald-400" : step.active ? "text-yellow-400" : "text-neutral-600"
                     }`}
                   >
                     {step.done ? (
@@ -208,7 +199,6 @@ export default function Admin() {
                   </div>
                 ))}
               </div>
-
               <p className="text-[10px] text-neutral-600 mt-1">
                 Video is playable immediately. IPFS pinning and blockchain endorsement continue in background.
               </p>
@@ -227,11 +217,7 @@ export default function Admin() {
               disabled={isDisabled || !file}
               className="w-full bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white py-3 rounded-xl font-semibold text-sm transition disabled:opacity-30 disabled:cursor-not-allowed"
             >
-              {stage === "uploading"
-                ? "Uploading..."
-                : stage === "processing"
-                ? "Processing..."
-                : "Upload & Generate Hashes"}
+              {stage === "uploading" ? "Uploading..." : stage === "processing" ? "Processing..." : "Upload & Generate Hashes"}
             </button>
           )}
 
@@ -242,23 +228,20 @@ export default function Admin() {
                   <span className="w-5 h-5 rounded-full bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center text-xs">
                     ✓
                   </span>
-                  <span className="text-sm font-semibold text-emerald-400">
-                    Upload Complete
-                  </span>
+                  <span className="text-sm font-semibold text-emerald-400">Upload Complete</span>
                 </div>
 
                 <div className="space-y-2 text-xs">
                   {[
                     { label: "Video ID", value: result.videoId, mono: true },
                     { label: "Total Segments", value: result.totalSegments, mono: false },
+                    { label: "IPFS Status", value: result.ipfsStatus, mono: false },
+                    { label: "Chain Status", value: result.blockchainStatus, mono: false },
+                    { label: "Metadata CID", value: result.metadataCid || "Pending background upload", mono: true },
                   ].map(({ label, value, mono }) => (
                     <div key={label} className="flex gap-3 items-start">
                       <span className="text-neutral-600 w-28 flex-shrink-0">{label}</span>
-                      <span
-                        className={`text-neutral-300 break-all ${mono ? "font-mono" : ""}`}
-                      >
-                        {value}
-                      </span>
+                      <span className={`text-neutral-300 break-all ${mono ? "font-mono" : ""}`}>{value}</span>
                     </div>
                   ))}
 
@@ -273,20 +256,28 @@ export default function Admin() {
                       {result.playlistUrl}
                     </a>
                   </div>
+
+                  {result.metadataCid && (
+                    <div className="flex gap-3 items-start">
+                      <span className="text-neutral-600 w-28 flex-shrink-0">Metadata</span>
+                      <a
+                        href={`https://gateway.pinata.cloud/ipfs/${result.metadataCid}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-orange-400 hover:text-orange-300 underline font-mono break-all"
+                      >
+                        {result.metadataCid}
+                      </a>
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex items-start gap-2 bg-orange-950/20 border border-orange-900/30 rounded-lg px-3 py-2.5 mt-2">
                   <span className="text-orange-400 text-sm mt-0.5">📌</span>
                   <div>
-                    <p className="text-[11px] font-semibold text-orange-400">
-                      IPFS Pinning in Progress
-                    </p>
+                    <p className="text-[11px] font-semibold text-orange-400">IPFS Pinning in Progress</p>
                     <p className="text-[10px] text-neutral-500 mt-0.5">
-                      Watch backend logs for{" "}
-                      <span className="font-mono text-orange-400/70">
-                        📌 IPFS: seg_xxx.ts → CID
-                      </span>
-                      .
+                      Watch backend logs for <span className="font-mono text-orange-400/70">📌 IPFS: seg_xxx.ts → CID</span>.
                     </p>
                   </div>
                 </div>
@@ -294,15 +285,9 @@ export default function Admin() {
                 <div className="flex items-start gap-2 bg-blue-950/20 border border-blue-900/30 rounded-lg px-3 py-2.5">
                   <span className="text-blue-400 text-sm mt-0.5">⛓️</span>
                   <div>
-                    <p className="text-[11px] font-semibold text-blue-400">
-                      Blockchain Registration in Progress
-                    </p>
+                    <p className="text-[11px] font-semibold text-blue-400">Blockchain Registration in Progress</p>
                     <p className="text-[10px] text-neutral-500 mt-0.5">
-                      Watch for{" "}
-                      <span className="font-mono text-blue-400/70">
-                        ⛓️ Segment N: registered + endorsed ✅
-                      </span>
-                      .
+                      Watch for <span className="font-mono text-blue-400/70">⛓️ Segment N: registered + endorsed ✅</span>.
                     </p>
                   </div>
                 </div>
