@@ -1,14 +1,14 @@
 {
-  "address": "0x4bFaE5c7712F5bf2811e3Be68Ff7bD6f107386c8",
+  "address": "0x25a72E8660F4aD1dB67A1eDF87931B94D351F066",
   "organizations": {
     "newsAgency": {
-      "address": "0x13EF2Ab9b77e3c9c4B1B654190320C94d3296A09"
+      "address": "0x4b4b13F24F888FaaaDF4E301e48933C2f8243137"
     },
     "broadcaster": {
-      "address": "0x792C62F52B2E6451C10F76619c785Bf1133A5869"
+      "address": "0xe0C68F64e2E871D01A073D2cd25100f5A5d161d6"
     },
     "auditor": {
-      "address": "0x91F82a580C5aAb605AC39c18a56B36f047A84c11"
+      "address": "0x6986205bE39f85627934D6edf7dA627f0857eA86"
     }
   },
   "network": "sepolia",
