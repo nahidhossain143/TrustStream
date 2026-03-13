@@ -1,17 +1,26 @@
-# Dependencies
+Dependencies
 node_modules/
-
-# Environment variables
+backend/node_modules/
+frontend/node_modules/
+network/node_modules/
+ 
+Environment variables — NEVER commit
 .env
 backend/.env
-
-# Uploaded & generated video files
+network/.env
+ 
+Uploaded & generated video files
 backend/public/uploads/
 backend/public/streams/
-
-# Logs
-*.log
-
-# OS files
+ 
+Frontend build output
+frontend/dist/
+frontend/.vite/
+ 
+Logs
+.log
+npm-debug.log
+ 
+OS files
 .DS_Store
 Thumbs.db
