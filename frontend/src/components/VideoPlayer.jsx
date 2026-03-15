@@ -15,7 +15,6 @@ export default function VideoPlayer({ videoId, playlistUrl, onVerify }) {
 
   useEffect(() => {
     if (!videoId || !playlistUrl) return;
-
     const video = videoRef.current;
     if (!video) return;
 
@@ -46,17 +45,36 @@ export default function VideoPlayer({ videoId, playlistUrl, onVerify }) {
           });
 
           const bc = verifyRes.data.blockchain;
+          const c2paData = verifyRes.data.c2pa;
+
           const resultData = {
             segmentIndex,
             clientHash,
             storedHash: verifyRes.data.storedHash,
             ipfsCid: verifyRes.data.ipfsCid,
             ipfsUrl: verifyRes.data.ipfsUrl,
+
+            // Blockchain
             blockchainAvailable: bc ? bc.available : false,
             blockchainVerified: bc ? bc.hashMatch : null,
             blockchainError: bc?.error || null,
             fullyEndorsed: bc ? bc.fullyEndorsed : null,
             endorsementCount: bc ? bc.endorsementCount : null,
+
+            // C2PA
+            c2pa: c2paData
+              ? {
+                  signed: c2paData.signed || false,
+                  valid: c2paData.valid || false,
+                  instanceId: c2paData.instanceId || null,
+                  manifestHash: c2paData.manifestHash || null,
+                  signedAt: c2paData.signedAt || null,
+                  signer: c2paData.signer || null,
+                  algorithm: c2paData.algorithm || null,
+                  assertionsCount: c2paData.assertionsCount || 0,
+                  error: c2paData.error || null,
+                }
+              : null,
           };
 
           const status = verifyRes.data.isMatch ? "verified" : "tampered";
@@ -67,22 +85,16 @@ export default function VideoPlayer({ videoId, playlistUrl, onVerify }) {
           }
         } catch (err) {
           console.error("Verification error:", err);
-
-          verificationCache.current[segmentIndex] = {
-            status: "warning",
-            data: {
-              segmentIndex,
-              blockchainAvailable: false,
-              blockchainError: "Verification service temporarily unavailable",
-            },
+          const errorData = {
+            segmentIndex,
+            blockchainAvailable: false,
+            blockchainError: "Verification service temporarily unavailable",
+            c2pa: null,
           };
+          verificationCache.current[segmentIndex] = { status: "warning", data: errorData };
 
           if (activeSegmentRef.current === segmentIndex) {
-            onVerifyRef.current("warning", {
-              segmentIndex,
-              blockchainAvailable: false,
-              blockchainError: "Verification service temporarily unavailable",
-            });
+            onVerifyRef.current("warning", errorData);
           }
         }
       });
@@ -90,8 +102,8 @@ export default function VideoPlayer({ videoId, playlistUrl, onVerify }) {
       hls.on(Hls.Events.FRAG_CHANGED, (event, data) => {
         const playingIndex = data.frag.sn;
         activeSegmentRef.current = playingIndex;
-
         const cachedResult = verificationCache.current[playingIndex];
+
         if (cachedResult) {
           onVerifyRef.current(cachedResult.status, cachedResult.data);
         } else {
