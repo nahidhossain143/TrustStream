@@ -5,6 +5,7 @@ const fs = require("fs");
 const crypto = require("crypto");
 const { exec } = require("child_process");
 
+
 const {
   registerVideoOnChain,
   registerAndEndorseBatch,
@@ -15,6 +16,7 @@ const {
   getTxReceipt,
   getNetworkStatus,
   getWalletBalances,
+  reportTamperOnChain,
 } = require("../services/blockchain.service");
 const {
   uploadSegmentToIPFS,
@@ -740,4 +742,50 @@ router.post("/sync-from-blockchain", async (req, res) => {
   }
 });
 
+
+// ─── Add this route BEFORE module.exports ───────────────
+
+// POST /api/upload/report-tamper
+// Called automatically by VideoPlayer when hash mismatch detected
+router.post("/report-tamper", async (req, res) => {
+  const { videoId, segmentIndex, evidence } = req.body;
+
+  if (!videoId || segmentIndex === undefined) {
+    return res.status(400).json({ error: "videoId and segmentIndex required" });
+  }
+
+  const manifest = readManifest(videoId);
+  if (!manifest) return res.status(404).json({ error: "Video not found" });
+
+  console.log(`⚠️  Tamper report received: video=${videoId} seg=${segmentIndex}`);
+
+  // Update local manifest
+  updateManifest(videoId, (current) => ({
+    ...current,
+    segments: current.segments.map((seg) =>
+      seg.index === Number(segmentIndex)
+        ? { ...seg, localTamperReported: true, tamperReportedAt: new Date().toISOString() }
+        : seg
+    ),
+  }));
+
+  // Report on-chain (non-blocking — don't fail if blockchain slow)
+  reportTamperOnChain(videoId, Number(segmentIndex), evidence || "Hash mismatch detected by viewer")
+    .then((result) => {
+      if (result.ok) {
+        console.log(`⛓️  Tamper report on-chain ✅ seg=${segmentIndex} tx=${result.txHash?.slice(0, 16)}...`);
+        updateManifest(videoId, (current) => ({
+          ...current,
+          segments: current.segments.map((seg) =>
+            seg.index === Number(segmentIndex)
+              ? { ...seg, tamperTxHash: result.txHash, tamperBlockNumber: result.blockNumber }
+              : seg
+          ),
+        }));
+      }
+    })
+    .catch((err) => console.error("On-chain tamper report failed:", err.message));
+
+  res.json({ reported: true, videoId, segmentIndex });
+});
 module.exports = router;
