@@ -70,10 +70,7 @@ const getNonce = async (address) => {
   return nonce;
 };
 
-// ─── Feature 1: Transaction Receipt Tracking ─────────────
-/**
- * Fetch full tx receipt — txHash, blockNumber, gasUsed, status
- */
+// ─── TX Receipt ───────────────────────────────────────────
 const getTxReceipt = async (txHash) => {
   if (!web3 || !txHash) return null;
   try {
@@ -95,10 +92,7 @@ const getTxReceipt = async (txHash) => {
   }
 };
 
-// ─── Feature 2: Network Status Check ─────────────────────
-/**
- * Check Sepolia network status — latest block, chainId, syncing
- */
+// ─── Network Status ───────────────────────────────────────
 const getNetworkStatus = async () => {
   if (!web3) return { online: false };
   try {
@@ -107,9 +101,7 @@ const getNetworkStatus = async () => {
       web3.eth.getChainId(),
       web3.eth.getGasPrice(),
     ]);
-
     const latestBlock = await web3.eth.getBlock(Number(blockNumber));
-
     return {
       online: true,
       network: "Sepolia Testnet",
@@ -127,48 +119,21 @@ const getNetworkStatus = async () => {
   }
 };
 
-// ─── Feature 3: Wallet Balance Check ─────────────────────
-/**
- * Get ETH balance for all 3 org wallets
- */
+// ─── Wallet Balances ──────────────────────────────────────
 const getWalletBalances = async () => {
   if (!web3) return [];
   try {
     const { newsAgency, broadcaster, auditor } = getAccounts();
-
     const [bal1, bal2, bal3] = await Promise.all([
       web3.eth.getBalance(newsAgency.address),
       web3.eth.getBalance(broadcaster.address),
       web3.eth.getBalance(auditor.address),
     ]);
-
     const toEth = (wei) => (Number(wei) / 1e18).toFixed(6);
-
     return [
-      {
-        org: "NewsAgency",
-        role: "Submitter",
-        address: newsAgency.address,
-        balanceWei: bal1.toString(),
-        balanceEth: toEth(bal1),
-        network: "Sepolia",
-      },
-      {
-        org: "Broadcaster",
-        role: "Endorser",
-        address: broadcaster.address,
-        balanceWei: bal2.toString(),
-        balanceEth: toEth(bal2),
-        network: "Sepolia",
-      },
-      {
-        org: "Auditor",
-        role: "Endorser",
-        address: auditor.address,
-        balanceWei: bal3.toString(),
-        balanceEth: toEth(bal3),
-        network: "Sepolia",
-      },
+      { org: "NewsAgency",  role: "Submitter", address: newsAgency.address,  balanceWei: bal1.toString(), balanceEth: toEth(bal1), network: "Sepolia" },
+      { org: "Broadcaster", role: "Endorser",  address: broadcaster.address, balanceWei: bal2.toString(), balanceEth: toEth(bal2), network: "Sepolia" },
+      { org: "Auditor",     role: "Endorser",  address: auditor.address,     balanceWei: bal3.toString(), balanceEth: toEth(bal3), network: "Sepolia" },
     ];
   } catch (err) {
     console.error("getWalletBalances error:", shortError(err));
@@ -176,27 +141,9 @@ const getWalletBalances = async () => {
   }
 };
 
-// ─── Helpers for receipt + block tracking ────────────────
-/**
- * Send tx and return full receipt with block + gas data
- */
-const sendAndTrack = async (txPromise) => {
-  const receipt = await txPromise;
-  return {
-    txHash: receipt.transactionHash,
-    blockNumber: Number(receipt.blockNumber),
-    blockHash: receipt.blockHash,
-    gasUsed: Number(receipt.gasUsed),
-    status: receipt.status ? "success" : "failed",
-    from: receipt.from,
-  };
-};
-
-// ─── Core Functions ───────────────────────────────────────
-
+// ─── Register Video ───────────────────────────────────────
 const registerVideoOnChain = async (videoId, title, metadataCid, totalSegments) => {
   if (!isBlockchainReady()) return { ok: false, skipped: true, error: "Blockchain not configured" };
-
   try {
     const { newsAgency } = getAccounts();
     let txReceipt = null;
@@ -208,7 +155,6 @@ const registerVideoOnChain = async (videoId, title, metadataCid, totalSegments) 
         .registerVideo(videoId, title, metadataCid, totalSegments)
         .send({ from: newsAgency.address, gas: 700000, gasPrice, nonce });
 
-      // Feature 1 + 2: Capture tx receipt + block info
       txReceipt = {
         txHash: receipt.transactionHash,
         blockNumber: Number(receipt.blockNumber),
@@ -224,16 +170,23 @@ const registerVideoOnChain = async (videoId, title, metadataCid, totalSegments) 
     if (txReceipt) {
       console.log(`   📦 Block: ${txReceipt.blockNumber} | Gas: ${txReceipt.gasUsed} | Tx: ${txReceipt.txHash?.slice(0, 16)}...`);
     }
-
     return { ok: true, txReceipt };
   } catch (err) {
-    const error = shortError(err);
-    console.error("⚠️  Blockchain registerVideo failed:", error);
-    return { ok: false, error };
+    console.error("⚠️  Blockchain registerVideo failed:", shortError(err));
+    return { ok: false, error: shortError(err) };
   }
 };
 
-const registerAndEndorse = async (videoId, segmentIndex, sha256Hash, chainHash, ipfsCid) => {
+// ─── Register + Endorse Segment (7 params) ────────────────
+const registerAndEndorse = async (
+  videoId,
+  segmentIndex,
+  sha256Hash,
+  chainHash,
+  ipfsCid,
+  c2paManifestHash = "",
+  c2paInstanceId = ""
+) => {
   if (!isBlockchainReady()) return { ok: false, skipped: true, error: "Blockchain not configured" };
 
   try {
@@ -241,11 +194,19 @@ const registerAndEndorse = async (videoId, segmentIndex, sha256Hash, chainHash, 
     const gasPrice = await getGasPrice();
     const txReceipts = {};
 
-    // Step 1: Register — capture receipt
+    // Step 1: Register with C2PA fields
     await withRetry(`reg:${segmentIndex}`, async () => {
       const nonce = await getNonce(newsAgency.address);
       const receipt = await contract.methods
-        .registerSegment(videoId, segmentIndex, sha256Hash, chainHash, ipfsCid)
+        .registerSegment(
+          videoId,
+          segmentIndex,
+          sha256Hash,
+          chainHash,
+          ipfsCid,
+          c2paManifestHash || "",
+          c2paInstanceId   || ""
+        )
         .send({ from: newsAgency.address, gas: 1200000, gasPrice, nonce });
 
       txReceipts.register = {
@@ -257,7 +218,7 @@ const registerAndEndorse = async (videoId, segmentIndex, sha256Hash, chainHash, 
       };
     });
 
-    // Step 2: Both endorsements in parallel — capture receipts
+    // Step 2: Broadcaster + Auditor endorse in parallel
     await Promise.all([
       withRetry(`endorse-b:${segmentIndex}`, async () => {
         const nonce = await getNonce(broadcaster.address);
@@ -289,11 +250,10 @@ const registerAndEndorse = async (videoId, segmentIndex, sha256Hash, chainHash, 
       }),
     ]);
 
-    // Feature 4: Total gas usage per segment
     const totalGasUsed =
-      (txReceipts.register?.gasUsed || 0) +
-      (txReceipts.broadcaster?.gasUsed || 0) +
-      (txReceipts.auditor?.gasUsed || 0);
+      (txReceipts.register?.gasUsed    || 0) +
+      (txReceipts.broadcaster?.gasUsed  || 0) +
+      (txReceipts.auditor?.gasUsed      || 0);
 
     console.log(`⛓️  Segment ${segmentIndex}: registered + endorsed ✅ | Gas: ${totalGasUsed}`);
 
@@ -306,13 +266,12 @@ const registerAndEndorse = async (videoId, segmentIndex, sha256Hash, chainHash, 
       blockNumber: txReceipts.register?.blockNumber || null,
     };
   } catch (err) {
-    const error = shortError(err);
-    console.error(`⚠️  Blockchain failed for segment ${segmentIndex}:`, error);
-    return { ok: false, error };
+    console.error(`⚠️  Blockchain failed for segment ${segmentIndex}:`, shortError(err));
+    return { ok: false, error: shortError(err) };
   }
 };
 
-// Batch: process multiple segments in parallel
+// ─── Batch ────────────────────────────────────────────────
 const BATCH_SIZE = 3;
 
 const registerAndEndorseBatch = async (videoId, segments) => {
@@ -323,7 +282,15 @@ const registerAndEndorseBatch = async (videoId, segments) => {
 
     const batchResults = await Promise.allSettled(
       batch.map((seg) =>
-        registerAndEndorse(videoId, seg.index, seg.sha256Hash, seg.chainHash, seg.ipfsCid)
+        registerAndEndorse(
+          videoId,
+          seg.index,
+          seg.sha256Hash,
+          seg.chainHash,
+          seg.ipfsCid,
+          seg.c2paManifestHash || "",
+          seg.c2paInstanceId   || ""
+        )
       )
     );
 
@@ -347,11 +314,11 @@ const registerAndEndorseBatch = async (videoId, segments) => {
   return results;
 };
 
+// ─── Verify ───────────────────────────────────────────────
 const verifyOnChain = async (videoId, segmentIndex, clientHash) => {
   if (!isBlockchainReady()) {
     return { available: false, hashMatch: null, fullyEndorsed: null, endorsementCount: null, error: "Blockchain not configured" };
   }
-
   try {
     const result = await withRetry(
       `verifySegment:${segmentIndex}`,
@@ -363,14 +330,16 @@ const verifyOnChain = async (videoId, segmentIndex, clientHash) => {
       hashMatch: result.hashMatch,
       fullyEndorsed: result.fullyEndorsed,
       endorsementCount: Number(result.endorsementCount),
+      isTampered: result.isTampered || false,
+      videoStatus: Number(result.videoStatus),
     };
   } catch (err) {
-    const error = shortError(err);
-    console.error("Blockchain verify error:", error);
-    return { available: false, hashMatch: null, fullyEndorsed: null, endorsementCount: null, error };
+    console.error("Blockchain verify error:", shortError(err));
+    return { available: false, hashMatch: null, fullyEndorsed: null, endorsementCount: null, error: shortError(err) };
   }
 };
 
+// ─── Get Endorsements ─────────────────────────────────────
 const getEndorsementsFromChain = async (videoId, segmentIndex) => {
   if (!isBlockchainReady()) return [];
   try {
@@ -390,6 +359,7 @@ const getEndorsementsFromChain = async (videoId, segmentIndex) => {
   }
 };
 
+// ─── Get TxLogs ───────────────────────────────────────────
 const getTxLogsFromChain = async () => {
   if (!isBlockchainReady()) return [];
   try {
@@ -408,7 +378,6 @@ const getTxLogsFromChain = async () => {
         timestamp: Number(log.timestamp),
       });
     }
-
     return logs.reverse();
   } catch (err) {
     console.error("getTxLogs error:", shortError(err));
@@ -416,6 +385,7 @@ const getTxLogsFromChain = async () => {
   }
 };
 
+// ─── Get Video ────────────────────────────────────────────
 const getVideoFromChain = async (videoId) => {
   if (!isBlockchainReady()) return { exists: false };
   try {
@@ -427,11 +397,63 @@ const getVideoFromChain = async (videoId) => {
       uploaderAddr: result.uploaderAddr,
       totalSegments: Number(result.totalSegments),
       registeredAt: Number(result.registeredAt),
+      status: Number(result.status),        // 0=Active, 1=Revoked, 2=Disputed
+      revokeReason: result.revokeReason || "",
       exists: result.exists,
     };
   } catch (err) {
     console.error("getVideo error:", shortError(err));
     return { exists: false };
+  }
+};
+
+// ─── Report Tamper ────────────────────────────────────────
+const reportTamperOnChain = async (videoId, segmentIndex, evidence) => {
+  if (!isBlockchainReady()) return { ok: false, error: "Blockchain not configured" };
+  try {
+    const { newsAgency } = getAccounts();
+    const gasPrice = await getGasPrice();
+    const nonce = await getNonce(newsAgency.address);
+    const receipt = await contract.methods
+      .reportTamper(videoId, segmentIndex, evidence)
+      .send({ from: newsAgency.address, gas: 400000, gasPrice, nonce });
+
+    console.log(`⚠️  Tamper reported for segment ${segmentIndex} ✅`);
+    return {
+      ok: true,
+      txHash: receipt.transactionHash,
+      blockNumber: Number(receipt.blockNumber),
+      gasUsed: Number(receipt.gasUsed),
+      etherscanUrl: `https://sepolia.etherscan.io/tx/${receipt.transactionHash}`,
+    };
+  } catch (err) {
+    console.error("reportTamper error:", shortError(err));
+    return { ok: false, error: shortError(err) };
+  }
+};
+
+// ─── Revoke Video ─────────────────────────────────────────
+const revokeVideoOnChain = async (videoId, reason) => {
+  if (!isBlockchainReady()) return { ok: false, error: "Blockchain not configured" };
+  try {
+    const { newsAgency } = getAccounts();
+    const gasPrice = await getGasPrice();
+    const nonce = await getNonce(newsAgency.address);
+    const receipt = await contract.methods
+      .revokeVideo(videoId, reason)
+      .send({ from: newsAgency.address, gas: 300000, gasPrice, nonce });
+
+    console.log(`🚫 Video ${videoId} revoked on chain ✅`);
+    return {
+      ok: true,
+      txHash: receipt.transactionHash,
+      blockNumber: Number(receipt.blockNumber),
+      gasUsed: Number(receipt.gasUsed),
+      etherscanUrl: `https://sepolia.etherscan.io/tx/${receipt.transactionHash}`,
+    };
+  } catch (err) {
+    console.error("revokeVideo error:", shortError(err));
+    return { ok: false, error: shortError(err) };
   }
 };
 
@@ -444,8 +466,9 @@ module.exports = {
   getTxLogsFromChain,
   getVideoFromChain,
   isBlockchainReady,
-  // New features
   getTxReceipt,
   getNetworkStatus,
   getWalletBalances,
+  reportTamperOnChain,
+  revokeVideoOnChain,
 };

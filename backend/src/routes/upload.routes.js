@@ -255,11 +255,13 @@ const syncVideoToIpfsAndChain = async (videoId) => {
   const batchResults = await registerAndEndorseBatch(
     manifest.videoId,
     manifest.segments.map((seg) => ({
-      index: seg.index,
-      sha256Hash: seg.sha256Hash,
-      chainHash: seg.chainHash,
-      ipfsCid: seg.ipfsCid,
-    }))
+    index: seg.index,
+    sha256Hash: seg.sha256Hash,
+    chainHash: seg.chainHash,
+    ipfsCid: seg.ipfsCid,
+    c2paManifestHash: seg.c2paManifestHash || "",
+    c2paInstanceId: seg.c2paInstanceId || "",
+  }))
   );
 
   // Feature 1+2+4: Save per-segment tx receipts + block + gas
