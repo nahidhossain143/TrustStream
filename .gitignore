@@ -8,6 +8,7 @@ Environment variables
 .env
 backend/.env
 network/.env
+frontend/.env
 
 Uploaded & generated video files
 backend/public/uploads/
