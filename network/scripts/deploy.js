@@ -1,3 +1,4 @@
+require("dotenv").config();
 const hre = require("hardhat");
 const fs = require("fs");
 
@@ -5,9 +6,15 @@ async function main() {
   const [deployer] = await hre.ethers.getSigners();
   console.log("🏢 Deploying with account:", deployer.address);
 
-  const newsAgency = "0x4b4b13F24F888FaaaDF4E301e48933C2f8243137";
-  const broadcaster = "0xe0C68F64e2E871D01A073D2cd25100f5A5d161d6";
-  const auditor = "0x6986205bE39f85627934D6edf7dA627f0857eA86";
+  // Load from .env
+  const newsAgency = process.env.NEWSAGENCY_ADDRESS;
+  const broadcaster = process.env.BROADCASTER_ADDRESS;
+  const auditor = process.env.AUDITOR_ADDRESS;
+
+  // Validation
+  if (!newsAgency || !broadcaster || !auditor) {
+    throw new Error("❌ Missing organization addresses in .env file");
+  }
 
   console.log("Organizations:");
   console.log("  NewsAgency: ", newsAgency);
@@ -30,7 +37,8 @@ async function main() {
       auditor: { address: auditor }
     },
     network: "sepolia",
-    chainId: 11155111
+    chainId: 11155111,
+    deployedAt: new Date().toISOString(),
   };
 
   fs.writeFileSync("deployment.json", JSON.stringify(deploymentInfo, null, 2));

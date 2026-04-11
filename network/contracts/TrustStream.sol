@@ -293,32 +293,34 @@ contract TrustStream {
     }
 
     function getSegment(
-        string memory videoId,
-        uint256 segmentIndex
+    string memory videoId,
+    uint256 segmentIndex
+)
+    public
+    view
+    returns (
+        string memory sha256Hash,
+        string memory chainHash,
+        string memory ipfsCid,
+        uint256 timestamp,
+        address submitter,
+        uint256 endorsementCount,
+        bool fullyEndorsed
     )
-        public
-        view
-        returns (
-            string memory sha256Hash,
-            string memory chainHash,
-            string memory ipfsCid,
-            uint256 timestamp,
-            address submitter,
-            uint256 endorsementCount,
-            bool fullyEndorsed
-        )
-    {
-        VideoAsset memory asset = assets[videoId][segmentIndex];
-        return (
-            asset.sha256Hash,
-            asset.chainHash,
-            asset.ipfsCid,
-            asset.timestamp,
-            asset.submitter,
-            endorsements[videoId][segmentIndex].length,
-            endorsements[videoId][segmentIndex].length >= REQUIRED_ENDORSEMENTS
-        );
-    }
+{
+    VideoAsset memory asset = assets[videoId][segmentIndex];
+    endorsementCount = endorsements[videoId][segmentIndex].length;
+    fullyEndorsed = endorsementCount >= REQUIRED_ENDORSEMENTS;
+    return (
+        asset.sha256Hash,
+        asset.chainHash,
+        asset.ipfsCid,
+        asset.timestamp,
+        asset.submitter,
+        endorsementCount,
+        fullyEndorsed
+    );
+}
 
     function getEndorsements(
         string memory videoId,
