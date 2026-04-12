@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: truststream-backend
+    runtime: node
+    buildCommand: apt-get install -y ffmpeg && npm install
+    startCommand: node src/server.js
