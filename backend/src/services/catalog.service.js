@@ -1,7 +1,10 @@
 const fs = require("fs");
 const path = require("path");
 
-const catalogDir = path.join(__dirname, "../../data/catalog");
+// --- Render Storage Setup ---
+const storageRoot = process.env.STORAGE_PATH || path.join(__dirname, "../../");
+const catalogDir = path.join(storageRoot, "data/catalog");
+// ----------------------------
 
 const ensureCatalogDir = () => {
   fs.mkdirSync(catalogDir, { recursive: true });
