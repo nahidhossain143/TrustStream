@@ -6,6 +6,14 @@ const crypto = require("crypto");
 const { exec } = require("child_process");
 
 
+const storageRoot = process.env.STORAGE_PATH || path.join(__dirname, '../../');
+const uploadsDir = path.join(storageRoot, 'public/uploads');
+const streamsDir = path.join(storageRoot, 'public/streams');
+
+if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+if (!fs.existsSync(streamsDir)) fs.mkdirSync(streamsDir, { recursive: true });
+
+
 const {
   registerVideoOnChain,
   registerAndEndorseBatch,
@@ -37,7 +45,7 @@ const {
 } = require("../services/c2pa.service");
 
 const router = express.Router();
-const upload = multer({ dest: "public/uploads/" });
+const upload = multer({ dest: uploadsDir });
 
 const hashFile = (filePath) =>
   new Promise((resolve, reject) => {
@@ -323,7 +331,7 @@ router.post("/", upload.single("video"), async (req, res) => {
   const title = req.body.title || req.file.originalname;
   const description = req.body.description || "";
   const videoId = crypto.randomUUID();
-  const outputFolder = path.join("public/streams", videoId);
+  const outputFolder = path.join(streamsDir, videoId);
 
   fs.mkdirSync(outputFolder, { recursive: true });
 
@@ -680,7 +688,7 @@ router.post("/sync-from-blockchain", async (req, res) => {
           segments.push({
             index: i,
             filename: ipfsSeg?.filename || `seg_${String(i).padStart(3, "0")}.ts`,
-            localPath: `public/streams/${videoId}/seg_${String(i).padStart(3, "0")}.ts`,
+            localPath: path.join(streamsDir, videoId, `seg_${String(i).padStart(3, "0")}.ts`),
             sha256Hash: ipfsSeg?.sha256Hash || null,
             chainHash: ipfsSeg?.chainHash || null,
             durationSeconds: ipfsSeg?.durationSeconds || 2,

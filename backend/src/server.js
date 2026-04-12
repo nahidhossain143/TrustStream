@@ -9,13 +9,31 @@ const { router: authRoutes } = require("./routes/auth.routes");
 
 const app = express();
 
-app.use(cors());
+// Render থেকে ফ্রন্টএন্ড যেন এক্সেস পায় সেজন্য CORS ওপেন করে দেওয়া হলো
+app.use(cors({
+  origin: '*'
+}));
 app.use(express.json());
 
-// Serve local HLS stream files
-app.use("/streams", express.static(path.join(__dirname, "../public/streams")));
+// --- Render Storage Setup ---
+// Render-এর হার্ডড্রাইভ থেকে যেন ভিডিওগুলো প্লে হয়
+const storageRoot = process.env.STORAGE_PATH || path.join(__dirname, "../");
+const streamsDir = path.join(storageRoot, "public/streams");
+// ----------------------------
 
-// Health check
+// Serve local HLS stream files from the persistent disk
+app.use("/streams", express.static(streamsDir));
+
+// Root Health Check (Render এ Cannot GET / এরর ঠিক করার জন্য)
+app.get("/", (req, res) => {
+  res.status(200).json({
+    status: "online",
+    service: "TrustStream API",
+    message: "Backend is running securely on Render."
+  });
+});
+
+// Existing health check
 app.get("/health", (req, res) => {
   res.json({ status: "ok", message: "TrustStream backend running" });
 });
@@ -26,5 +44,5 @@ app.use("/api/upload", uploadRoutes);
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
