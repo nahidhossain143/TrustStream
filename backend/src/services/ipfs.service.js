@@ -5,6 +5,38 @@ const FormData = require("form-data");
 const PINATA_JWT = process.env.PINATA_JWT;
 const IPFS_GATEWAY = process.env.IPFS_GATEWAY || "https://gateway.pinata.cloud/ipfs";
 
+// ─── Upload Generic JSON ──────────────────────────────────
+const uploadJsonToIPFS = async (payload, name = "metadata") => {
+  if (!PINATA_JWT) {
+    console.warn("⚠️ PINATA_JWT not set — skipping JSON upload");
+    return null;
+  }
+
+  try {
+    const response = await axios.post(
+      "https://api.pinata.cloud/pinning/pinJSONToIPFS",
+      {
+        pinataContent: payload,
+        pinataMetadata: { name },
+        pinataOptions: { cidVersion: 1 },
+      },
+      {
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${PINATA_JWT}`,
+        },
+      }
+    );
+
+    console.log(`📌 JSON CID (${name}): ${response.data.IpfsHash}`);
+    return response.data.IpfsHash;
+  } catch (err) {
+    const message = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+    console.error(`⚠️ IPFS JSON upload failed for ${name}:`, message);
+    return null;
+  }
+};
+
 // ─── Upload Segment ───────────────────────────────────────
 const uploadSegmentToIPFS = async (filePath, fileName) => {
   if (!PINATA_JWT) {
@@ -43,31 +75,7 @@ const uploadSegmentToIPFS = async (filePath, fileName) => {
 
 // ─── Upload Metadata JSON ─────────────────────────────────
 const uploadMetadataToIPFS = async (metadata) => {
-  if (!PINATA_JWT) return null;
-
-  try {
-    const response = await axios.post(
-      "https://api.pinata.cloud/pinning/pinJSONToIPFS",
-      {
-        pinataContent: metadata,
-        pinataMetadata: { name: `metadata_${metadata.videoId}` },
-        pinataOptions: { cidVersion: 1 },
-      },
-      {
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${PINATA_JWT}`,
-        },
-      }
-    );
-
-    console.log(`📌 Metadata CID: ${response.data.IpfsHash}`);
-    return response.data.IpfsHash;
-  } catch (err) {
-    const message = err.response?.data ? JSON.stringify(err.response.data) : err.message;
-    console.error("⚠️ IPFS metadata upload failed:", message);
-    return null;
-  }
+  return uploadJsonToIPFS(metadata, `metadata_${metadata.videoId}`);
 };
 
 // ─── Fetch JSON from IPFS ─────────────────────────────────
@@ -90,6 +98,7 @@ const buildGatewayUrl = (cid) => {
 };
 
 module.exports = {
+  uploadJsonToIPFS,
   uploadSegmentToIPFS,
   uploadMetadataToIPFS,
   fetchJsonFromIPFS,

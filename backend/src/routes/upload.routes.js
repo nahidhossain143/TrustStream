@@ -5,14 +5,12 @@ const fs = require("fs");
 const crypto = require("crypto");
 const { exec } = require("child_process");
 
-
-const storageRoot = process.env.STORAGE_PATH || path.join(__dirname, '../../');
-const uploadsDir = path.join(storageRoot, 'public/uploads');
-const streamsDir = path.join(storageRoot, 'public/streams');
+const storageRoot = process.env.STORAGE_PATH || path.join(__dirname, "../../");
+const uploadsDir = path.join(storageRoot, "public/uploads");
+const streamsDir = path.join(storageRoot, "public/streams");
 
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 if (!fs.existsSync(streamsDir)) fs.mkdirSync(streamsDir, { recursive: true });
-
 
 const {
   registerVideoOnChain,
@@ -29,6 +27,7 @@ const {
 const {
   uploadSegmentToIPFS,
   uploadMetadataToIPFS,
+  uploadJsonToIPFS,
   buildGatewayUrl,
   fetchJsonFromIPFS,
 } = require("../services/ipfs.service");
@@ -43,6 +42,7 @@ const {
   readAndVerifyManifest,
   buildVideoManifest,
 } = require("../services/c2pa.service");
+const { analyzeVideoForensics } = require("../services/forensics.service");
 
 const router = express.Router();
 const upload = multer({ dest: uploadsDir });
@@ -59,7 +59,10 @@ const hashFile = (filePath) =>
 const runFfmpeg = (command) =>
   new Promise((resolve, reject) => {
     exec(command, (err) => {
-      if (err) { reject(err); return; }
+      if (err) {
+        reject(err);
+        return;
+      }
       resolve();
     });
   });
@@ -82,7 +85,6 @@ const buildMetadataPayload = (manifest) => ({
     c2paManifestHash: segment.c2paManifestHash || null,
     c2paInstanceId: segment.c2paInstanceId || null,
     c2paSignedAt: segment.c2paSignedAt || null,
-    // Feature 1+2+4: tx data in IPFS metadata
     txHash: segment.txHash || null,
     blockNumber: segment.blockNumber || null,
     gasUsed: segment.totalGasUsed || null,
@@ -104,10 +106,51 @@ const buildVideoSummary = (manifest) => ({
   ipfsStatus: manifest.ipfsStatus,
   blockchainStatus: manifest.blockchainStatus,
   c2paStatus: manifest.c2paStatus || "pending",
-  // Feature 1+2: video-level tx info
   videoTxHash: manifest.videoTxHash || null,
   videoBlockNumber: manifest.videoBlockNumber || null,
   totalGasUsed: manifest.totalGasUsed || null,
+});
+
+const buildForensicSummary = (manifest) => ({
+  forensicStatus: manifest.forensicStatus || "pending",
+  forensicError: manifest.forensicError || null,
+  forensicLabel: manifest.forensics?.finalLabel || null,
+  forensicRiskScore: manifest.forensics?.videoRiskScore ?? null,
+  forensicReportCid: manifest.forensicReportCid || null,
+  forensicReportUrl: manifest.forensicReportUrl || null,
+});
+
+const buildVideoSummaryWithForensics = (manifest) => ({
+  ...buildVideoSummary(manifest),
+  ...buildForensicSummary(manifest),
+});
+
+const buildMetadataPayloadWithForensics = (manifest) => {
+  const payload = buildMetadataPayload(manifest);
+
+  if (manifest.forensics) {
+    payload.forensics = {
+      analysisVersion: manifest.forensics.analysisVersion,
+      analysisTimestamp: manifest.forensics.analysisTimestamp,
+      videoRiskScore: manifest.forensics.videoRiskScore,
+      finalLabel: manifest.forensics.finalLabel,
+      forensicReportCid: manifest.forensicReportCid || null,
+      forensicReportUrl: manifest.forensicReportUrl || null,
+    };
+  }
+
+  return payload;
+};
+
+const buildForensicReportPayload = (manifest) => ({
+  ...manifest.forensics,
+  videoId: manifest.videoId,
+  title: manifest.title,
+  description: manifest.description,
+  createdAt: manifest.createdAt,
+  playlistUrl: manifest.playlistUrl,
+  metadataCid: manifest.metadataCid || null,
+  forensicReportCid: manifest.forensicReportCid || null,
 });
 
 const getSegmentFromManifest = (videoId, segmentIndex) => {
@@ -118,21 +161,27 @@ const getSegmentFromManifest = (videoId, segmentIndex) => {
 };
 
 const uploadWithRetry = async (localPath, filename, maxRetries = 3) => {
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     try {
       return await uploadSegmentToIPFS(localPath, filename);
     } catch (err) {
       const errStr = err?.message || JSON.stringify(err) || "";
-      const isRateLimit = errStr.includes("RATE_LIMITED") || errStr.includes("rate limit");
+      const isRateLimit =
+        errStr.includes("RATE_LIMITED") || errStr.includes("rate limit");
+
       if (isRateLimit && attempt < maxRetries) {
         const waitMs = 2000 * (attempt + 1);
-        console.log(`⏳ Rate limited on ${filename}, retrying in ${waitMs / 1000}s...`);
-        await new Promise((r) => setTimeout(r, waitMs));
+        console.log(
+          `⏳ Rate limited on ${filename}, retrying in ${waitMs / 1000}s...`
+        );
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
       } else {
         throw err;
       }
     }
   }
+
+  return null;
 };
 
 const IPFS_BATCH_SIZE = 2;
@@ -141,20 +190,23 @@ const syncVideoToIpfsAndChain = async (videoId) => {
   let manifest = readManifest(videoId);
   if (!manifest) return;
 
-  // ─── Step 1: C2PA ────────────────────────────────────────
   console.log(`📋 Generating C2PA manifests for video ${videoId}...`);
   updateManifest(videoId, (current) => ({ ...current, c2paStatus: "signing" }));
 
   const c2paResults = await generateAllManifests(
-    videoId, manifest.segments, manifest.title, manifest.createdAt
+    videoId,
+    manifest.segments,
+    manifest.title,
+    manifest.createdAt
   );
 
   updateManifest(videoId, (current) => ({
     ...current,
-    c2paStatus: c2paResults.every((r) => r.ok) ? "signed" : "partial",
+    c2paStatus: c2paResults.every((result) => result.ok) ? "signed" : "partial",
     segments: current.segments.map((item) => {
-      const c2pa = c2paResults.find((r) => r.index === item.index);
+      const c2pa = c2paResults.find((result) => result.index === item.index);
       if (!c2pa) return item;
+
       return {
         ...item,
         c2paSigned: Boolean(c2pa.ok),
@@ -166,20 +218,30 @@ const syncVideoToIpfsAndChain = async (videoId) => {
     }),
   }));
 
-  console.log(`📋 C2PA: ${c2paResults.filter((r) => r.ok).length}/${manifest.totalSegments} signed ✅`);
+  console.log(
+    `📋 C2PA: ${c2paResults.filter((result) => result.ok).length}/${manifest.totalSegments} signed ✅`
+  );
 
-  // ─── Step 2: IPFS Upload ─────────────────────────────────
-  updateManifest(videoId, (current) => ({ ...current, ipfsStatus: "uploading", backgroundError: null }));
+  updateManifest(videoId, (current) => ({
+    ...current,
+    ipfsStatus: "uploading",
+    backgroundError: null,
+  }));
+
   manifest = readManifest(videoId);
-  const pendingSegments = manifest.segments.filter((seg) => !seg.ipfsCid);
+  if (!manifest) return;
 
-  for (let i = 0; i < pendingSegments.length; i += IPFS_BATCH_SIZE) {
-    const batch = pendingSegments.slice(i, i + IPFS_BATCH_SIZE);
+  const pendingSegments = manifest.segments.filter((segment) => !segment.ipfsCid);
+
+  for (let index = 0; index < pendingSegments.length; index += IPFS_BATCH_SIZE) {
+    const batch = pendingSegments.slice(index, index + IPFS_BATCH_SIZE);
+
     await Promise.allSettled(
       batch.map(async (segment) => {
         try {
           const ipfsCid = await uploadWithRetry(segment.localPath, segment.filename);
           const ipfsUrl = buildGatewayUrl(ipfsCid);
+
           updateManifest(videoId, (current) => ({
             ...current,
             segments: current.segments.map((item) =>
@@ -191,15 +253,33 @@ const syncVideoToIpfsAndChain = async (videoId) => {
         }
       })
     );
-    if (i + IPFS_BATCH_SIZE < pendingSegments.length) {
-      await new Promise((r) => setTimeout(r, 300));
+
+    if (index + IPFS_BATCH_SIZE < pendingSegments.length) {
+      await new Promise((resolve) => setTimeout(resolve, 300));
     }
   }
 
   manifest = readManifest(videoId);
   if (!manifest) return;
 
-  const hasMissingIpfs = manifest.segments.some((seg) => !seg.ipfsCid);
+  if (manifest.forensics && !manifest.forensicReportCid) {
+    const forensicReportCid = await uploadJsonToIPFS(
+      buildForensicReportPayload(manifest),
+      `forensic_${manifest.videoId}`
+    );
+    const forensicReportUrl = buildGatewayUrl(forensicReportCid);
+
+    updateManifest(videoId, (current) => ({
+      ...current,
+      forensicReportCid,
+      forensicReportUrl,
+    }));
+  }
+
+  manifest = readManifest(videoId);
+  if (!manifest) return;
+
+  const hasMissingIpfs = manifest.segments.some((segment) => !segment.ipfsCid);
   if (hasMissingIpfs) {
     updateManifest(videoId, (current) => ({
       ...current,
@@ -210,8 +290,7 @@ const syncVideoToIpfsAndChain = async (videoId) => {
     return;
   }
 
-  // ─── Step 3: Metadata upload ─────────────────────────────
-  const metadataPayload = buildMetadataPayload(manifest);
+  const metadataPayload = buildMetadataPayloadWithForensics(manifest);
   const videoC2paManifest = buildVideoManifest(manifest, c2paResults);
   metadataPayload.c2paVideoManifest = videoC2paManifest;
 
@@ -234,12 +313,19 @@ const syncVideoToIpfsAndChain = async (videoId) => {
     return;
   }
 
-  // ─── Step 4: Blockchain Registration ─────────────────────
-  updateManifest(videoId, (current) => ({ ...current, blockchainStatus: "registering" }));
+  updateManifest(videoId, (current) => ({
+    ...current,
+    blockchainStatus: "registering",
+  }));
+
   manifest = readManifest(videoId);
+  if (!manifest) return;
 
   const registerVideoResult = await registerVideoOnChain(
-    manifest.videoId, manifest.title, metadataCid, manifest.totalSegments
+    manifest.videoId,
+    manifest.title,
+    metadataCid,
+    manifest.totalSegments
   );
 
   if (!registerVideoResult?.ok) {
@@ -251,7 +337,6 @@ const syncVideoToIpfsAndChain = async (videoId) => {
     return;
   }
 
-  // Feature 1+2: Save video-level tx receipt
   const videoTxReceipt = registerVideoResult.txReceipt;
   updateManifest(videoId, (current) => ({
     ...current,
@@ -261,46 +346,42 @@ const syncVideoToIpfsAndChain = async (videoId) => {
     videoTxGasUsed: videoTxReceipt?.gasUsed || null,
   }));
 
-  // ─── Step 5: Segment registration batch ──────────────────
   const batchResults = await registerAndEndorseBatch(
     manifest.videoId,
-    manifest.segments.map((seg) => ({
-    index: seg.index,
-    sha256Hash: seg.sha256Hash,
-    chainHash: seg.chainHash,
-    ipfsCid: seg.ipfsCid,
-    c2paManifestHash: seg.c2paManifestHash || "",
-    c2paInstanceId: seg.c2paInstanceId || "",
-  }))
+    manifest.segments.map((segment) => ({
+      index: segment.index,
+      sha256Hash: segment.sha256Hash,
+      chainHash: segment.chainHash,
+      ipfsCid: segment.ipfsCid,
+      c2paManifestHash: segment.c2paManifestHash || "",
+      c2paInstanceId: segment.c2paInstanceId || "",
+    }))
   );
 
-  // Feature 1+2+4: Save per-segment tx receipts + block + gas
   let totalGasUsed = videoTxReceipt?.gasUsed || 0;
 
   updateManifest(videoId, (current) => ({
     ...current,
     segments: current.segments.map((item) => {
-      const result = batchResults.find((r) => r.index === item.index);
+      const result = batchResults.find((entry) => entry.index === item.index);
       if (!result) return item;
+
       totalGasUsed += result.totalGasUsed || 0;
+
       return {
         ...item,
         blockchainRegistered: Boolean(result.ok),
         endorsementCount: result.endorsementCount || 0,
         fullyEndorsed: Boolean(result.fullyEndorsed),
         blockchainError: result.ok ? null : result.error || null,
-        // Feature 1: tx hashes per org
         txHash: result.txReceipts?.register?.txHash || null,
         txHashBroadcaster: result.txReceipts?.broadcaster?.txHash || null,
         txHashAuditor: result.txReceipts?.auditor?.txHash || null,
-        // Feature 2: block number
         blockNumber: result.blockNumber || null,
-        // Feature 4: gas usage
         gasUsedRegister: result.txReceipts?.register?.gasUsed || null,
         gasUsedBroadcaster: result.txReceipts?.broadcaster?.gasUsed || null,
         gasUsedAuditor: result.txReceipts?.auditor?.gasUsed || null,
         totalGasUsed: result.totalGasUsed || null,
-        // Etherscan links
         etherscanRegister: result.txReceipts?.register?.etherscanUrl || null,
         etherscanBroadcaster: result.txReceipts?.broadcaster?.etherscanUrl || null,
         etherscanAuditor: result.txReceipts?.auditor?.etherscanUrl || null,
@@ -309,23 +390,29 @@ const syncVideoToIpfsAndChain = async (videoId) => {
   }));
 
   manifest = readManifest(videoId);
-  const hasChainFailures = manifest.segments.some((seg) => seg.blockchainRegistered === false);
+  if (!manifest) return;
+
+  const hasChainFailures = manifest.segments.some(
+    (segment) => segment.blockchainRegistered === false
+  );
 
   updateManifest(videoId, (current) => ({
     ...current,
     status: "ready",
     blockchainStatus: hasChainFailures ? "degraded" : "ready",
     totalGasUsed,
-    backgroundError: hasChainFailures ? "Some segments were not registered on-chain" : null,
+    backgroundError: hasChainFailures
+      ? "Some segments were not registered on-chain"
+      : null,
   }));
 
   console.log(`✅ C2PA + IPFS + Blockchain complete | Total gas: ${totalGasUsed}`);
 };
 
-// ─── Routes ───────────────────────────────────────────────
-
 router.post("/", upload.single("video"), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: "Video file is required" });
+  if (!req.file) {
+    return res.status(400).json({ error: "Video file is required" });
+  }
 
   const inputPath = req.file.path;
   const title = req.body.title || req.file.originalname;
@@ -341,7 +428,11 @@ router.post("/", upload.single("video"), async (req, res) => {
   try {
     await runFfmpeg(ffmpegCmd);
 
-    const files = fs.readdirSync(outputFolder).filter((f) => f.endsWith(".ts")).sort();
+    const files = fs
+      .readdirSync(outputFolder)
+      .filter((file) => file.endsWith(".ts"))
+      .sort();
+
     const segments = [];
     let prevHash = null;
 
@@ -355,41 +446,84 @@ router.post("/", upload.single("video"), async (req, res) => {
         .digest("hex");
 
       segments.push({
-        index, filename, localPath, sha256Hash, chainHash,
+        index,
+        filename,
+        localPath,
+        sha256Hash,
+        chainHash,
         durationSeconds: 2,
-        ipfsCid: null, ipfsUrl: null,
+        ipfsCid: null,
+        ipfsUrl: null,
         blockchainRegistered: false,
-        endorsementCount: 0, fullyEndorsed: false,
-        c2paSigned: false, c2paManifestHash: null,
-        c2paInstanceId: null, c2paSignedAt: null, c2paSidecarPath: null,
-        // Feature fields (populated after blockchain)
-        txHash: null, txHashBroadcaster: null, txHashAuditor: null,
-        blockNumber: null, totalGasUsed: null,
-        etherscanRegister: null, etherscanBroadcaster: null, etherscanAuditor: null,
+        endorsementCount: 0,
+        fullyEndorsed: false,
+        c2paSigned: false,
+        c2paManifestHash: null,
+        c2paInstanceId: null,
+        c2paSignedAt: null,
+        c2paSidecarPath: null,
+        txHash: null,
+        txHashBroadcaster: null,
+        txHashAuditor: null,
+        blockNumber: null,
+        totalGasUsed: null,
+        etherscanRegister: null,
+        etherscanBroadcaster: null,
+        etherscanAuditor: null,
       });
 
       prevHash = sha256Hash;
     }
 
+    let forensicReport = null;
+    let forensicStatus = "pending";
+    let forensicError = null;
+
+    try {
+      forensicReport = await analyzeVideoForensics({
+        videoId,
+        videoPath: inputPath,
+        title,
+        totalSegments: segments.length,
+      });
+      forensicStatus = "ready";
+    } catch (forensicErr) {
+      forensicStatus = "failed";
+      forensicError = forensicErr.message;
+      console.error("Forensic analysis error:", forensicErr.message);
+    }
+
     const manifest = writeManifest(videoId, {
-      videoId, title, description,
+      videoId,
+      title,
+      description,
       createdAt: new Date().toISOString(),
       totalSegments: segments.length,
       playlistUrl: `/streams/${videoId}/playlist.m3u8`,
-      metadataCid: null, metadataUrl: null,
+      metadataCid: null,
+      metadataUrl: null,
       status: "ready",
       ipfsStatus: "pending",
       blockchainStatus: "pending",
       c2paStatus: "pending",
       backgroundError: null,
-      videoTxHash: null, videoBlockNumber: null,
-      videoTxEtherscan: null, totalGasUsed: null,
+      videoTxHash: null,
+      videoBlockNumber: null,
+      videoTxEtherscan: null,
+      totalGasUsed: null,
+      forensicStatus,
+      forensicError,
+      forensics: forensicReport,
+      forensicReportCid: null,
+      forensicReportUrl: null,
       segments,
     });
 
     res.json({
-      message: "Upload complete. C2PA signing, IPFS and blockchain sync running in background.",
-      ...buildVideoSummary(manifest),
+      message:
+        "Upload complete. C2PA signing, IPFS and blockchain sync running in background.",
+      ...buildVideoSummaryWithForensics(manifest),
+      forensics: manifest.forensics || null,
     });
 
     fs.unlink(inputPath, () => {});
@@ -399,7 +533,10 @@ router.post("/", upload.single("video"), async (req, res) => {
       updateManifest(videoId, (current) => ({
         ...current,
         ipfsStatus: current.ipfsStatus === "uploaded" ? current.ipfsStatus : "partial",
-        blockchainStatus: current.blockchainStatus === "ready" ? current.blockchainStatus : "degraded",
+        blockchainStatus:
+          current.blockchainStatus === "ready"
+            ? current.blockchainStatus
+            : "degraded",
         backgroundError: err.message,
       }));
     });
@@ -412,7 +549,7 @@ router.post("/", upload.single("video"), async (req, res) => {
 
 router.get("/videos", async (req, res) => {
   try {
-    const videos = listManifests().map(buildVideoSummary);
+    const videos = listManifests().map(buildVideoSummaryWithForensics);
     res.json(videos);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -422,41 +559,65 @@ router.get("/videos", async (req, res) => {
 router.get("/videos/:videoId", async (req, res) => {
   const manifest = readManifest(req.params.videoId);
   if (!manifest) return res.status(404).json({ error: "Video not found" });
-  res.json({ ...buildVideoSummary(manifest), backgroundError: manifest.backgroundError });
+
+  res.json({
+    ...buildVideoSummaryWithForensics(manifest),
+    backgroundError: manifest.backgroundError,
+    forensics: manifest.forensics || null,
+  });
+});
+
+router.get("/videos/:videoId/forensics", async (req, res) => {
+  const manifest = readManifest(req.params.videoId);
+  if (!manifest) return res.status(404).json({ error: "Video not found" });
+
+  res.json({
+    videoId: manifest.videoId,
+    ...buildForensicSummary(manifest),
+    forensics: manifest.forensics || null,
+  });
 });
 
 router.get("/videos/:videoId/segments", async (req, res) => {
   const manifest = readManifest(req.params.videoId);
   if (!manifest) return res.status(404).json({ error: "Video not found" });
+
   res.json(
-    manifest.segments.map((seg) => ({
-      segmentIndex: seg.index,
-      sha256Hash: seg.sha256Hash,
-      chainHash: seg.chainHash,
-      ipfsCid: seg.ipfsCid,
-      gatewayUrl: seg.ipfsUrl,
-      endorsementCount: seg.endorsementCount,
-      fullyEndorsed: seg.fullyEndorsed,
-      blockchainRegistered: seg.blockchainRegistered,
-      c2paSigned: seg.c2paSigned || false,
-      c2paManifestHash: seg.c2paManifestHash || null,
-      c2paInstanceId: seg.c2paInstanceId || null,
-      c2paSignedAt: seg.c2paSignedAt || null,
-      // Feature 1+2+4
-      txHash: seg.txHash || null,
-      blockNumber: seg.blockNumber || null,
-      totalGasUsed: seg.totalGasUsed || null,
-      etherscanRegister: seg.etherscanRegister || null,
-      etherscanBroadcaster: seg.etherscanBroadcaster || null,
-      etherscanAuditor: seg.etherscanAuditor || null,
+    manifest.segments.map((segment) => ({
+      segmentIndex: segment.index,
+      sha256Hash: segment.sha256Hash,
+      chainHash: segment.chainHash,
+      ipfsCid: segment.ipfsCid,
+      gatewayUrl: segment.ipfsUrl,
+      endorsementCount: segment.endorsementCount,
+      fullyEndorsed: segment.fullyEndorsed,
+      blockchainRegistered: segment.blockchainRegistered,
+      c2paSigned: segment.c2paSigned || false,
+      c2paManifestHash: segment.c2paManifestHash || null,
+      c2paInstanceId: segment.c2paInstanceId || null,
+      c2paSignedAt: segment.c2paSignedAt || null,
+      txHash: segment.txHash || null,
+      blockNumber: segment.blockNumber || null,
+      totalGasUsed: segment.totalGasUsed || null,
+      etherscanRegister: segment.etherscanRegister || null,
+      etherscanBroadcaster: segment.etherscanBroadcaster || null,
+      etherscanAuditor: segment.etherscanAuditor || null,
     }))
   );
 });
 
 router.get("/ipfs/:videoId/:segmentIndex", async (req, res) => {
-  const { segment } = getSegmentFromManifest(req.params.videoId, req.params.segmentIndex);
+  const { segment } = getSegmentFromManifest(
+    req.params.videoId,
+    req.params.segmentIndex
+  );
   if (!segment) return res.status(404).json({ error: "Segment not found" });
-  res.json({ segmentIndex: segment.index, ipfsCid: segment.ipfsCid, ipfsUrl: segment.ipfsUrl });
+
+  res.json({
+    segmentIndex: segment.index,
+    ipfsCid: segment.ipfsCid,
+    ipfsUrl: segment.ipfsUrl,
+  });
 });
 
 router.get("/ipfs-playlist/:videoId", async (req, res) => {
@@ -464,19 +625,36 @@ router.get("/ipfs-playlist/:videoId", async (req, res) => {
   if (!manifest) return res.status(404).send("Playlist not found");
 
   let metadata = null;
-  if (manifest.metadataCid) metadata = await fetchJsonFromIPFS(manifest.metadataCid);
+  if (manifest.metadataCid) {
+    metadata = await fetchJsonFromIPFS(manifest.metadataCid);
+  }
 
   const sourceSegments = metadata?.segments?.length
     ? metadata.segments
-    : manifest.segments.filter((seg) => seg.ipfsCid).map((seg) => ({ cid: seg.ipfsCid, durationSeconds: seg.durationSeconds }));
+    : manifest.segments
+        .filter((segment) => segment.ipfsCid)
+        .map((segment) => ({
+          cid: segment.ipfsCid,
+          durationSeconds: segment.durationSeconds,
+        }));
 
-  if (!sourceSegments.length) return res.status(404).send("IPFS playlist not available yet");
-
-  const lines = ["#EXTM3U","#EXT-X-VERSION:3","#EXT-X-TARGETDURATION:2","#EXT-X-PLAYLIST-TYPE:VOD","#EXT-X-MEDIA-SEQUENCE:0"];
-  for (const seg of sourceSegments) {
-    lines.push(`#EXTINF:${Number(seg.durationSeconds || 2).toFixed(6)},`);
-    lines.push(buildGatewayUrl(seg.cid));
+  if (!sourceSegments.length) {
+    return res.status(404).send("IPFS playlist not available yet");
   }
+
+  const lines = [
+    "#EXTM3U",
+    "#EXT-X-VERSION:3",
+    "#EXT-X-TARGETDURATION:2",
+    "#EXT-X-PLAYLIST-TYPE:VOD",
+    "#EXT-X-MEDIA-SEQUENCE:0",
+  ];
+
+  for (const segment of sourceSegments) {
+    lines.push(`#EXTINF:${Number(segment.durationSeconds || 2).toFixed(6)},`);
+    lines.push(buildGatewayUrl(segment.cid));
+  }
+
   lines.push("#EXT-X-ENDLIST");
   res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -484,7 +662,10 @@ router.get("/ipfs-playlist/:videoId", async (req, res) => {
 });
 
 router.get("/c2pa/:videoId/:segmentIndex", async (req, res) => {
-  const { segment } = getSegmentFromManifest(req.params.videoId, req.params.segmentIndex);
+  const { segment } = getSegmentFromManifest(
+    req.params.videoId,
+    req.params.segmentIndex
+  );
   if (!segment) return res.status(404).json({ error: "Segment not found" });
 
   const result = readAndVerifyManifest(segment.localPath);
@@ -502,7 +683,9 @@ router.post("/verify", async (req, res) => {
   const { videoId, segmentIndex, clientHash } = req.body;
   const { manifest, segment } = getSegmentFromManifest(videoId, segmentIndex);
 
-  if (!manifest || !segment) return res.status(404).json({ error: "Segment not found" });
+  if (!manifest || !segment) {
+    return res.status(404).json({ error: "Segment not found" });
+  }
 
   const isMatch = segment.sha256Hash === clientHash;
 
@@ -513,9 +696,10 @@ router.post("/verify", async (req, res) => {
         hashMatch: null,
         fullyEndorsed: segment.fullyEndorsed || null,
         endorsementCount: segment.endorsementCount || 0,
-        error: manifest.blockchainStatus === "pending"
-          ? "Blockchain registration still running"
-          : "Segment not registered on-chain",
+        error:
+          manifest.blockchainStatus === "pending"
+            ? "Blockchain registration still running"
+            : "Segment not registered on-chain",
       };
 
   const c2pa = readAndVerifyManifest(segment.localPath);
@@ -536,7 +720,6 @@ router.post("/verify", async (req, res) => {
       assertionsCount: c2pa.assertions_count || 0,
       error: c2pa.error || null,
     },
-    // Feature 1+2+4: tx info in verify response
     txInfo: {
       txHash: segment.txHash || null,
       blockNumber: segment.blockNumber || null,
@@ -545,7 +728,10 @@ router.post("/verify", async (req, res) => {
       etherscanBroadcaster: segment.etherscanBroadcaster || null,
       etherscanAuditor: segment.etherscanAuditor || null,
     },
-    playback: { source: manifest.playlistUrl, ipfsReady: Boolean(segment.ipfsCid) },
+    playback: {
+      source: manifest.playlistUrl,
+      ipfsReady: Boolean(segment.ipfsCid),
+    },
     status: isMatch ? "verified" : "tampered",
   });
 });
@@ -567,7 +753,10 @@ router.get("/blockchain/video/:videoId", async (req, res) => {
 });
 
 router.get("/blockchain/endorsements/:videoId/:segmentIndex", async (req, res) => {
-  const endorsements = await getEndorsementsFromChain(req.params.videoId, req.params.segmentIndex);
+  const endorsements = await getEndorsementsFromChain(
+    req.params.videoId,
+    req.params.segmentIndex
+  );
   res.json({ endorsements });
 });
 
@@ -576,7 +765,6 @@ router.get("/blockchain/txlogs", async (req, res) => {
   res.json({ logs });
 });
 
-// ─── Feature 1: TX Receipt ────────────────────────────────
 router.get("/blockchain/receipt/:txHash", async (req, res) => {
   try {
     const receipt = await getTxReceipt(req.params.txHash);
@@ -587,7 +775,6 @@ router.get("/blockchain/receipt/:txHash", async (req, res) => {
   }
 });
 
-// ─── Feature 3: Network Status ────────────────────────────
 router.get("/blockchain/network-status", async (req, res) => {
   try {
     const status = await getNetworkStatus();
@@ -597,7 +784,6 @@ router.get("/blockchain/network-status", async (req, res) => {
   }
 });
 
-// ─── Feature 5: Wallet Balances ───────────────────────────
 router.get("/blockchain/wallet-balances", async (req, res) => {
   try {
     const balances = await getWalletBalances();
@@ -607,9 +793,11 @@ router.get("/blockchain/wallet-balances", async (req, res) => {
   }
 });
 
-// ─── Feature 2+4: Segment TX Details ─────────────────────
 router.get("/blockchain/segment-tx/:videoId/:segmentIndex", async (req, res) => {
-  const { segment } = getSegmentFromManifest(req.params.videoId, req.params.segmentIndex);
+  const { segment } = getSegmentFromManifest(
+    req.params.videoId,
+    req.params.segmentIndex
+  );
   if (!segment) return res.status(404).json({ error: "Segment not found" });
 
   res.json({
@@ -647,7 +835,11 @@ router.post("/sync-from-blockchain", async (req, res) => {
     const videoIds = [...new Set(logs.map((log) => log.videoId).filter(Boolean))];
 
     if (!videoIds.length) {
-      return res.json({ message: "No videos found on blockchain.", synced: [], failed: [] });
+      return res.json({
+        message: "No videos found on blockchain.",
+        synced: [],
+        failed: [],
+      });
     }
 
     const synced = [];
@@ -657,7 +849,11 @@ router.post("/sync-from-blockchain", async (req, res) => {
       try {
         const existing = readManifest(videoId);
         if (existing) {
-          synced.push({ videoId, title: existing.title, status: "already_exists" });
+          synced.push({
+            videoId,
+            title: existing.title,
+            status: "already_exists",
+          });
           continue;
         }
 
@@ -678,17 +874,26 @@ router.post("/sync-from-blockchain", async (req, res) => {
         const segments = [];
 
         const endorsementResults = await Promise.allSettled(
-          Array.from({ length: totalSegments }, (_, i) => getEndorsementsFromChain(videoId, i))
+          Array.from({ length: totalSegments }, (_, index) =>
+            getEndorsementsFromChain(videoId, index)
+          )
         );
 
-        for (let i = 0; i < totalSegments; i++) {
-          const ipfsSeg = ipfsMetadata?.segments?.[i];
-          const endorsements = endorsementResults[i].status === "fulfilled" ? endorsementResults[i].value : [];
+        for (let index = 0; index < totalSegments; index += 1) {
+          const ipfsSeg = ipfsMetadata?.segments?.[index];
+          const endorsements =
+            endorsementResults[index].status === "fulfilled"
+              ? endorsementResults[index].value
+              : [];
 
           segments.push({
-            index: i,
-            filename: ipfsSeg?.filename || `seg_${String(i).padStart(3, "0")}.ts`,
-            localPath: path.join(streamsDir, videoId, `seg_${String(i).padStart(3, "0")}.ts`),
+            index,
+            filename: ipfsSeg?.filename || `seg_${String(index).padStart(3, "0")}.ts`,
+            localPath: path.join(
+              streamsDir,
+              videoId,
+              `seg_${String(index).padStart(3, "0")}.ts`
+            ),
             sha256Hash: ipfsSeg?.sha256Hash || null,
             chainHash: ipfsSeg?.chainHash || null,
             durationSeconds: ipfsSeg?.durationSeconds || 2,
@@ -701,29 +906,48 @@ router.post("/sync-from-blockchain", async (req, res) => {
             c2paManifestHash: ipfsSeg?.c2paManifestHash || null,
             c2paInstanceId: ipfsSeg?.c2paInstanceId || null,
             c2paSignedAt: ipfsSeg?.c2paSignedAt || null,
-            // Feature 1+2+4 from IPFS metadata
             txHash: ipfsSeg?.txHash || null,
             blockNumber: ipfsSeg?.blockNumber || null,
             totalGasUsed: ipfsSeg?.gasUsed || null,
           });
         }
 
+        const metadataForensics = ipfsMetadata?.forensics || null;
+
         const manifest = writeManifest(videoId, {
           videoId,
           title: chainVideo.title || ipfsMetadata?.title || "Untitled",
           description: ipfsMetadata?.description || "",
-          createdAt: chainVideo.registeredAt ? new Date(chainVideo.registeredAt * 1000).toISOString() : new Date().toISOString(),
+          createdAt: chainVideo.registeredAt
+            ? new Date(chainVideo.registeredAt * 1000).toISOString()
+            : new Date().toISOString(),
           totalSegments,
           playlistUrl: ipfsMetadata?.playlistUrl || `/streams/${videoId}/playlist.m3u8`,
           metadataCid: chainVideo.metadataCid || null,
-          metadataUrl: chainVideo.metadataCid ? buildGatewayUrl(chainVideo.metadataCid) : null,
+          metadataUrl: chainVideo.metadataCid
+            ? buildGatewayUrl(chainVideo.metadataCid)
+            : null,
           status: "synced_from_chain",
           ipfsStatus: ipfsMetadata ? "uploaded" : "unknown",
           blockchainStatus: "ready",
-          c2paStatus: ipfsMetadata?.segments?.[0]?.c2paManifestHash ? "signed" : "unknown",
+          c2paStatus: ipfsMetadata?.segments?.[0]?.c2paManifestHash
+            ? "signed"
+            : "unknown",
           backgroundError: null,
           syncedFromBlockchain: true,
           syncedFromIPFS: Boolean(ipfsMetadata),
+          forensicStatus: metadataForensics ? "ready" : "unknown",
+          forensicError: null,
+          forensics: metadataForensics
+            ? {
+                analysisVersion: metadataForensics.analysisVersion || null,
+                analysisTimestamp: metadataForensics.analysisTimestamp || null,
+                videoRiskScore: metadataForensics.videoRiskScore ?? null,
+                finalLabel: metadataForensics.finalLabel || null,
+              }
+            : null,
+          forensicReportCid: metadataForensics?.forensicReportCid || null,
+          forensicReportUrl: metadataForensics?.forensicReportUrl || null,
           segments,
         });
 
@@ -733,7 +957,6 @@ router.post("/sync-from-blockchain", async (req, res) => {
           status: "synced",
           source: ipfsMetadata ? "blockchain+ipfs" : "blockchain_only",
         });
-
       } catch (videoErr) {
         failed.push({ videoId, error: videoErr.message });
       }
@@ -744,17 +967,11 @@ router.post("/sync-from-blockchain", async (req, res) => {
       synced,
       failed,
     });
-
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-
-// ─── Add this route BEFORE module.exports ───────────────
-
-// POST /api/upload/report-tamper
-// Called automatically by VideoPlayer when hash mismatch detected
 router.post("/report-tamper", async (req, res) => {
   const { videoId, segmentIndex, evidence } = req.body;
 
@@ -767,27 +984,40 @@ router.post("/report-tamper", async (req, res) => {
 
   console.log(`⚠️  Tamper report received: video=${videoId} seg=${segmentIndex}`);
 
-  // Update local manifest
   updateManifest(videoId, (current) => ({
     ...current,
-    segments: current.segments.map((seg) =>
-      seg.index === Number(segmentIndex)
-        ? { ...seg, localTamperReported: true, tamperReportedAt: new Date().toISOString() }
-        : seg
+    segments: current.segments.map((segment) =>
+      segment.index === Number(segmentIndex)
+        ? {
+            ...segment,
+            localTamperReported: true,
+            tamperReportedAt: new Date().toISOString(),
+          }
+        : segment
     ),
   }));
 
-  // Report on-chain (non-blocking — don't fail if blockchain slow)
-  reportTamperOnChain(videoId, Number(segmentIndex), evidence || "Hash mismatch detected by viewer")
+  reportTamperOnChain(
+    videoId,
+    Number(segmentIndex),
+    evidence || "Hash mismatch detected by viewer"
+  )
     .then((result) => {
       if (result.ok) {
-        console.log(`⛓️  Tamper report on-chain ✅ seg=${segmentIndex} tx=${result.txHash?.slice(0, 16)}...`);
+        console.log(
+          `⛓️  Tamper report on-chain ✅ seg=${segmentIndex} tx=${result.txHash?.slice(0, 16)}...`
+        );
+
         updateManifest(videoId, (current) => ({
           ...current,
-          segments: current.segments.map((seg) =>
-            seg.index === Number(segmentIndex)
-              ? { ...seg, tamperTxHash: result.txHash, tamperBlockNumber: result.blockNumber }
-              : seg
+          segments: current.segments.map((segment) =>
+            segment.index === Number(segmentIndex)
+              ? {
+                  ...segment,
+                  tamperTxHash: result.txHash,
+                  tamperBlockNumber: result.blockNumber,
+                }
+              : segment
           ),
         }));
       }
@@ -796,4 +1026,5 @@ router.post("/report-tamper", async (req, res) => {
 
   res.json({ reported: true, videoId, segmentIndex });
 });
+
 module.exports = router;
