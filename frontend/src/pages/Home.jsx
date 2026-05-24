@@ -1,238 +1,325 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import api from "../services/api";
+import { feedAPI } from "../services/api";
 import Navbar from "../components/Navbar";
 import VideoPlayer from "../components/VideoPlayer";
-import VerificationBadge from "../components/VerificationBadge";
-import ForensicPanel from "../components/ForensicPanel";
-import SyncButton from "../components/SyncButton";
 import { useTheme } from "../context/ThemeContext";
 
-// ─── Sidebar Video Card ──────────────────────────────────
-function VideoCard({ v, isActive, onClick, formatDuration, timeAgo, isDark }) {
-  const forensicTone =
-    v.forensicLabel === "Authentic"
-      ? "text-emerald-500 bg-emerald-950/20 border-emerald-800/30"
-      : v.forensicLabel === "Suspicious"
-      ? "text-amber-500 bg-amber-950/20 border-amber-800/30"
-      : "text-red-500 bg-red-950/20 border-red-800/30";
+const IPFS_GATEWAY = import.meta.env.VITE_IPFS_GATEWAY || "https://gateway.pinata.cloud/ipfs";
+const buildGatewayUrl = (cid) => (cid ? `${IPFS_GATEWAY}/${cid}` : null);
 
+const timeAgo = (dateStr) => {
+  const source = typeof dateStr === "number" && dateStr < 1_000_000_000_000 ? dateStr * 1000 : dateStr;
+  const diff = (Date.now() - new Date(source)) / 1000;
+  if (diff < 60) return "just now";
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return `${Math.floor(diff / 86400)}d ago`;
+};
+const formatDuration = (secs) => {
+  const m = Math.floor((secs || 0) / 60), s = Math.round((secs || 0) % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
+};
+
+// ─── Video Modal (fullscreen) ─────────────────────────────
+function VideoModal({ item, onClose, isDark }) {
+  const navigate = useNavigate();
+  const overlayRef = useRef(null);
+  useEffect(() => {
+    const h = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [onClose]);
+  useEffect(() => {
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = ""; };
+  }, []);
   return (
-    <button
-      onClick={onClick}
-      className={`w-full text-left group flex gap-3 p-3 rounded-xl border transition-all duration-300 ${
-        isActive
-          ? isDark
-            ? "bg-blue-500/8 border-blue-500/30"
-            : "bg-blue-50 border-blue-200 shadow-sm"
-          : isDark
-          ? "bg-transparent border-transparent hover:bg-white/4 hover:border-white/10"
-          : "bg-transparent border-transparent hover:bg-neutral-100 hover:border-neutral-200"
-      }`}
-    >
-      <div
-        className={`relative w-28 h-[63px] flex-shrink-0 rounded-lg overflow-hidden border ${
-          isDark ? "bg-neutral-900 border-white/8" : "bg-neutral-200 border-neutral-300"
-        }`}
-      >
-        <div className="absolute inset-0 flex items-center justify-center">
-          <div
-            className={`w-7 h-7 rounded-full flex items-center justify-center border ${
-              isActive
-                ? "bg-blue-500 border-blue-400 shadow-[0_0_12px_rgba(59,130,246,0.5)]"
-                : isDark
-                ? "bg-white/10 border-white/20"
-                : "bg-white/70 border-neutral-300"
-            }`}
-          >
-            <svg className="w-3 h-3 text-white ml-0.5" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M8 5v14l11-7z" />
-            </svg>
+    <div ref={overlayRef} onClick={(e) => { if (e.target === overlayRef.current) onClose(); }}
+      className="fixed inset-0 z-50 flex items-center justify-center"
+      style={{ background: "rgba(0,0,0,0.95)", backdropFilter: "blur(8px)" }}>
+      <div className={`relative w-full h-full flex flex-col ${isDark ? "bg-black" : "bg-neutral-950"}`}>
+        <button onClick={onClose} className="absolute top-4 right-4 z-20 w-10 h-10 rounded-full bg-black/70 hover:bg-black flex items-center justify-center transition-colors">
+          <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+        <div className="flex-1 flex items-center justify-center bg-black overflow-hidden">
+          <div className="w-full h-full max-w-[1600px]">
+            <VideoPlayer
+              videoId={item.videoId || item.id}
+              playlistUrl={`http://localhost:3001${item.playlistUrl}`}
+              posterUrl={item.thumbnailUrl ? `http://localhost:3001${item.thumbnailUrl}` : undefined}
+              onVerify={() => {}}
+            />
           </div>
         </div>
-
-        <span
-          className={`absolute bottom-1.5 right-1.5 font-mono text-[9px] px-1.5 py-0.5 rounded-md ${
-            isDark ? "bg-black/70 text-neutral-300" : "bg-black/50 text-white"
-          }`}
-        >
-          {formatDuration((v.totalSegments ?? 0) * 2)}
-        </span>
-
-        {isActive && <div className="absolute inset-0 ring-1 ring-blue-500/40 rounded-lg" />}
-      </div>
-
-      <div className="flex-1 min-w-0 py-0.5 space-y-1">
-        <p
-          className={`text-[12px] font-medium leading-snug line-clamp-2 ${
-            isActive
-              ? isDark
-                ? "text-white"
-                : "text-blue-700"
-              : isDark
-              ? "text-neutral-400 group-hover:text-neutral-300"
-              : "text-neutral-600 group-hover:text-neutral-900"
-          }`}
-        >
-          {v.title}
-        </p>
-
-        <p className={`text-[10px] ${isDark ? "text-neutral-600" : "text-neutral-400"}`}>
-          TrustStream News
-        </p>
-
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <span
-            className={`font-mono text-[9px] px-1.5 py-0.5 rounded-md border ${
-              isDark
-                ? "text-neutral-700 bg-neutral-900/80 border-neutral-800"
-                : "text-neutral-500 bg-neutral-100 border-neutral-200"
-            }`}
-          >
-            {v.totalSegments} segs
-          </span>
-
-          {v.c2paStatus === "signed" && (
-            <span className="font-mono text-[9px] text-violet-500 bg-violet-950/30 border border-violet-800/40 px-1.5 py-0.5 rounded-md">
-              C2PA
-            </span>
-          )}
-
-          {v.blockchainStatus === "ready" && (
-            <span className="font-mono text-[9px] text-emerald-500 bg-emerald-950/30 border border-emerald-800/40 px-1.5 py-0.5 rounded-md">
-              ⛓ On-chain
-            </span>
-          )}
-
-          {v.forensicLabel && (
-            <span
-              className={`font-mono text-[9px] border px-1.5 py-0.5 rounded-md ${forensicTone}`}
-            >
-              {v.forensicLabel}
-            </span>
-          )}
-
-          <span className={`text-[10px] ${isDark ? "text-neutral-700" : "text-neutral-400"}`}>
-            {timeAgo(v.registeredAt)}
-          </span>
+        <div className="px-6 py-4 flex items-center justify-between gap-4 bg-neutral-900 border-t border-white/10">
+          <div className="min-w-0">
+            <p className="font-semibold text-base truncate text-white">{item.title}</p>
+            <p className="text-xs font-mono mt-0.5 text-neutral-400">
+              {item.totalSegments} segments · {formatDuration((item.totalSegments || 0) * 2)}
+            </p>
+          </div>
+          <button onClick={() => { onClose(); navigate(`/video/${item.videoId || item.id}`); }}
+            className="flex-shrink-0 text-xs font-semibold text-blue-400 hover:text-blue-300 border border-blue-500/30 hover:border-blue-500/60 px-4 py-2 rounded-lg transition-all">
+            Full Details ↗
+          </button>
         </div>
       </div>
-    </button>
+    </div>
   );
 }
 
-// ─── Main ────────────────────────────────────────────────
+// ─── Image Lightbox (fullscreen) ──────────────────────────
+function ImageLightbox({ item, onClose, isDark }) {
+  const navigate = useNavigate();
+  const overlayRef = useRef(null);
+  const imgSrc = buildGatewayUrl(item.ipfsCid);
+  useEffect(() => {
+    const h = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [onClose]);
+  useEffect(() => {
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = ""; };
+  }, []);
+  return (
+    <div ref={overlayRef} onClick={(e) => { if (e.target === overlayRef.current) onClose(); }}
+      className="fixed inset-0 z-50 flex items-center justify-center"
+      style={{ background: "rgba(0,0,0,0.95)", backdropFilter: "blur(8px)" }}>
+      <div className={`relative w-full h-full flex flex-col ${isDark ? "bg-black" : "bg-neutral-950"}`}>
+        <button onClick={onClose} className="absolute top-4 right-4 z-20 w-10 h-10 rounded-full bg-black/70 hover:bg-black flex items-center justify-center transition-colors">
+          <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+        <div className="flex-1 flex items-center justify-center overflow-auto p-6">
+          {imgSrc ? (
+            <img src={imgSrc} alt={item.title} className="max-w-full max-h-full object-contain" />
+          ) : (
+            <p className="text-neutral-400 font-mono text-sm">Image not available</p>
+          )}
+        </div>
+        <div className="px-6 py-4 flex items-center justify-between gap-4 bg-neutral-900 border-t border-white/10">
+          <div className="min-w-0">
+            <p className="font-semibold text-base truncate text-white">{item.title}</p>
+            <p className="text-xs font-mono mt-0.5 text-neutral-400">IPFS · {item.ipfsCid ? `${item.ipfsCid.slice(0, 12)}…` : "—"}</p>
+          </div>
+          <button onClick={() => { onClose(); navigate(`/image/${item.imageId}`); }}
+            className="flex-shrink-0 text-xs font-semibold text-purple-400 hover:text-purple-300 border border-purple-500/30 hover:border-purple-500/60 px-4 py-2 rounded-lg transition-all">
+            Full Details ↗
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Verification Pills ───────────────────────────────────
+function VerifPills({ item }) {
+  const pills = [];
+  if (item.blockchainStatus === "ready") pills.push({ label: "⛓ On-chain", cls: "text-emerald-400 border-emerald-800/40 bg-emerald-950/30" });
+  if (item.c2paStatus === "signed" || item.c2paSigned) pills.push({ label: "📋 C2PA", cls: "text-violet-400 border-violet-800/40 bg-violet-950/30" });
+  if (item.ipfsStatus === "uploaded") pills.push({ label: "📌 IPFS", cls: "text-orange-400 border-orange-800/40 bg-orange-950/30" });
+  if (item.fullyEndorsed || item.endorsementCount >= 2) pills.push({ label: "✓ 3-Org", cls: "text-blue-400 border-blue-800/40 bg-blue-950/30" });
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {pills.map(({ label, cls }) => (
+        <span key={label} className={`text-[10px] font-mono font-semibold border rounded-full px-2 py-0.5 ${cls}`}>{label}</span>
+      ))}
+    </div>
+  );
+}
+
+// ─── Video Post Card ──────────────────────────────────────
+function VideoPostCard({ item, onPlay, isDark }) {
+  const navigate = useNavigate();
+  const textMuted = isDark ? "text-neutral-500" : "text-neutral-400";
+  const cardBg = isDark ? "bg-neutral-900 border-neutral-800" : "bg-white border-neutral-200";
+  const text = isDark ? "text-white" : "text-neutral-900";
+  return (
+    <article className={`rounded-2xl border overflow-hidden transition-all duration-200 hover:shadow-lg ${cardBg}`}>
+      <div className="flex items-center gap-3 px-6 pt-5 pb-4">
+        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-600 to-indigo-700 flex items-center justify-center text-[11px] font-black text-white flex-shrink-0">TS</div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className={`text-sm font-semibold ${text}`}>TrustStream News</span>
+            <span className="text-[8px] font-bold text-blue-400 bg-blue-500/10 border border-blue-500/20 px-1.5 py-0.5 rounded uppercase tracking-wide">Verified</span>
+            <span className="text-[10px] px-1.5 py-0.5 rounded border text-blue-400 border-blue-800/30 bg-blue-950/20 font-mono">🎬 VIDEO</span>
+          </div>
+          <p className={`text-[11px] mt-0.5 ${textMuted}`}>{timeAgo(item.registeredAt)}</p>
+        </div>
+      </div>
+      <div onClick={() => onPlay(item)} className="relative cursor-pointer group bg-neutral-950 overflow-hidden" style={{ aspectRatio: "16/9" }}>
+        {/* Thumbnail (poster) — falls back to placeholder grid if not uploaded */}
+        {item.thumbnailUrl ? (
+          <img
+            src={`http://localhost:3001${item.thumbnailUrl}`}
+            alt={item.title}
+            className="absolute inset-0 w-full h-full object-cover group-hover:scale-[1.02] transition-transform duration-300"
+            loading="lazy"
+          />
+        ) : (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="grid grid-cols-8 gap-0.5 opacity-5 w-full h-full p-2">
+              {Array.from({ length: 56 }).map((_, i) => <div key={i} className="bg-white rounded-sm" />)}
+            </div>
+          </div>
+        )}
+        <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/10 to-transparent z-10" />
+        <div className="absolute inset-0 z-20 flex items-center justify-center">
+          <div className="w-20 h-20 rounded-full bg-white/20 backdrop-blur-sm border border-white/30 flex items-center justify-center group-hover:bg-white/30 group-hover:scale-110 transition-all duration-200 shadow-2xl">
+            <svg className="w-9 h-9 text-white ml-1.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
+          </div>
+        </div>
+        <div className="absolute bottom-4 right-4 z-20">
+          <span className="bg-black/70 backdrop-blur-sm text-white text-xs font-mono font-bold px-2.5 py-1 rounded-md">{formatDuration((item.totalSegments || 0) * 2)}</span>
+        </div>
+        <div className="absolute bottom-4 left-4 z-20">
+          <span className="bg-black/60 text-neutral-300 text-[10px] font-mono px-2.5 py-1 rounded-md">{item.totalSegments} segments</span>
+        </div>
+      </div>
+      <div className="px-6 pt-4 pb-5 space-y-3">
+        <div>
+          <h2 className={`font-bold text-lg leading-snug ${text}`}>{item.title}</h2>
+          {item.description && <p className={`text-sm mt-1 leading-relaxed line-clamp-2 ${textMuted}`}>{item.description}</p>}
+        </div>
+        <VerifPills item={item} />
+        <div className={`flex items-center justify-between pt-3 border-t ${isDark ? "border-neutral-800" : "border-neutral-100"}`}>
+          <button onClick={() => onPlay(item)} className="flex items-center gap-2 text-sm font-semibold text-blue-400 hover:text-blue-300 transition-colors">
+            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
+            Watch Now
+          </button>
+          <button onClick={() => navigate(`/video/${item.videoId || item.id}`)} className={`text-xs font-mono transition-colors ${textMuted} hover:text-blue-400`}>
+            View Details ↗
+          </button>
+        </div>
+      </div>
+    </article>
+  );
+}
+
+// ─── Image Post Card ──────────────────────────────────────
+function ImagePostCard({ item, onOpen, isDark }) {
+  const navigate = useNavigate();
+  const [imgError, setImgError] = useState(false);
+  const imgSrc = buildGatewayUrl(item.ipfsCid);
+  const textMuted = isDark ? "text-neutral-500" : "text-neutral-400";
+  const cardBg = isDark ? "bg-neutral-900 border-neutral-800" : "bg-white border-neutral-200";
+  const text = isDark ? "text-white" : "text-neutral-900";
+  return (
+    <article className={`rounded-2xl border overflow-hidden transition-all duration-200 hover:shadow-lg ${cardBg}`}>
+      <div className="flex items-center gap-3 px-6 pt-5 pb-4">
+        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-600 to-fuchsia-700 flex items-center justify-center text-[11px] font-black text-white flex-shrink-0">TS</div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className={`text-sm font-semibold ${text}`}>TrustStream News</span>
+            <span className="text-[8px] font-bold text-purple-400 bg-purple-500/10 border border-purple-500/20 px-1.5 py-0.5 rounded uppercase tracking-wide">Verified</span>
+            <span className="text-[10px] px-1.5 py-0.5 rounded border text-purple-400 border-purple-800/30 bg-purple-950/20 font-mono">🖼 IMAGE</span>
+          </div>
+          <p className={`text-[11px] mt-0.5 ${textMuted}`}>{timeAgo(item.registeredAt)}</p>
+        </div>
+      </div>
+      <div onClick={() => onOpen(item)} className="relative cursor-pointer bg-neutral-950 group">
+        {imgSrc && !imgError ? (
+          <img
+            src={imgSrc}
+            alt={item.title}
+            className="w-full object-contain group-hover:opacity-95 transition-opacity duration-200"
+            style={{ maxHeight: "85vh", minHeight: "320px" }}
+            onError={() => setImgError(true)}
+          />
+        ) : item.ipfsStatus === "uploading" || item.ipfsStatus === "pending" ? (
+          <div className="h-80 flex flex-col items-center justify-center gap-3">
+            <div className="w-8 h-8 rounded-full border-t-2 border-purple-400 animate-spin" />
+            <p className={`text-xs font-mono ${textMuted}`}>Uploading to IPFS…</p>
+          </div>
+        ) : (
+          <div className="h-80 flex flex-col items-center justify-center gap-2">
+            <span className="text-5xl">🖼️</span>
+            <p className={`text-xs font-mono ${textMuted}`}>Image not yet available</p>
+          </div>
+        )}
+        {imgSrc && !imgError && (
+          <div className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity">
+            <span className="bg-black/70 backdrop-blur-sm text-white text-[10px] font-mono px-2.5 py-1 rounded-md">click to expand ⤢</span>
+          </div>
+        )}
+      </div>
+      <div className="px-6 pt-4 pb-5 space-y-3">
+        <div>
+          <h2 className={`font-bold text-lg leading-snug ${text}`}>{item.title}</h2>
+          {item.description && <p className={`text-sm mt-1 leading-relaxed line-clamp-2 ${textMuted}`}>{item.description}</p>}
+        </div>
+        <VerifPills item={item} />
+        <div className={`flex items-center justify-between pt-3 border-t ${isDark ? "border-neutral-800" : "border-neutral-100"}`}>
+          {imgSrc && !imgError ? (
+            <a href={imgSrc} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-sm font-semibold text-purple-400 hover:text-purple-300 transition-colors">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+              </svg>
+              Open on IPFS
+            </a>
+          ) : <span />}
+          <button onClick={() => navigate(`/image/${item.imageId}`)} className={`text-xs font-mono ml-auto transition-colors ${textMuted} hover:text-purple-400`}>
+            View Details ↗
+          </button>
+        </div>
+      </div>
+    </article>
+  );
+}
+
+// ─── Main ─────────────────────────────────────────────────
 export default function Home() {
   const { isDark } = useTheme();
-  const navigate = useNavigate();
-
-  const [videoList, setVideoList] = useState([]);
-  const [selected, setSelected] = useState(null);
-  const [selectedDetails, setSelectedDetails] = useState(null);
-  const [verified, setVerified] = useState(null);
-  const [verifyDetails, setVerifyDetails] = useState(null);
+  const [feedList, setFeedList] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState("all");
+  const [playingItem, setPlayingItem] = useState(null);
+  const [previewImage, setPreviewImage] = useState(null);
+  const [page, setPage] = useState(1);
+  const ITEMS_PER_PAGE = 10;
 
-  const fetchVideos = () =>
-    api
-      .get("/upload/videos")
-      .then((res) => {
-        setVideoList(res.data);
-        if (res.data.length > 0 && !selected) setSelected(res.data[0]);
-      })
-      .catch(console.error);
+  const fetchFeed = useCallback(() =>
+    feedAPI.getFeed().then((res) => { setFeedList(res.data?.feed || res.data || []); }).catch(console.error), []);
 
-  useEffect(() => {
-    fetchVideos().finally(() => setLoading(false));
-  }, []);
+  useEffect(() => { fetchFeed().finally(() => setLoading(false)); }, [fetchFeed]);
 
-  useEffect(() => {
-    setVerified(null);
-    setVerifyDetails(null);
-  }, [selected]);
+  const filteredFeed = feedList.filter((item) => {
+    if (filter === "video") return item.mediaType === "video";
+    if (filter === "image") return item.mediaType === "image";
+    return true;
+  });
+  const paginatedFeed = filteredFeed.slice(0, page * ITEMS_PER_PAGE);
+  const hasMore = paginatedFeed.length < filteredFeed.length;
+  const videoCount = feedList.filter((i) => i.mediaType === "video").length;
+  const imageCount = feedList.filter((i) => i.mediaType === "image").length;
 
-  useEffect(() => {
-    if (!selected?.videoId && !selected?.id) {
-      setSelectedDetails(null);
-      return;
-    }
-
-    const videoId = selected.videoId || selected.id;
-    setSelectedDetails(null);
-
-    api
-      .get(`/upload/videos/${videoId}`)
-      .then((res) => setSelectedDetails(res.data))
-      .catch((err) => console.error("Video detail fetch failed:", err));
-  }, [selected]);
-
-  const formatDuration = (secs) => {
-    const m = Math.floor((secs || 0) / 60);
-    const s = Math.round((secs || 0) % 60);
-    return `${m}:${s.toString().padStart(2, "0")}`;
-  };
-
-  const timeAgo = (dateStr) => {
-    const source =
-      typeof dateStr === "number" && dateStr < 1_000_000_000_000
-        ? dateStr * 1000
-        : dateStr;
-    const diff = (Date.now() - new Date(source)) / 1000;
-    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-    return `${Math.floor(diff / 86400)}d ago`;
-  };
-
-  const currentVideo = selectedDetails || selected;
-
-  const bg = isDark ? "bg-[#080808]" : "bg-neutral-50";
-  const cardBg = isDark ? "bg-neutral-900/40 border-white/8" : "bg-white border-neutral-200";
+  const bg = isDark ? "bg-[#080808]" : "bg-neutral-100";
   const text = isDark ? "text-white" : "text-neutral-900";
-  const textMuted = isDark ? "text-neutral-500" : "text-neutral-500";
+  const textMuted = isDark ? "text-neutral-500" : "text-neutral-400";
 
   if (loading) {
     return (
-      <div className={`min-h-screen ${bg} flex flex-col`}>
+      <div className={`min-h-screen ${bg}`}>
         <Navbar />
-        <div className="flex-1 flex items-center justify-center">
-          <div className="flex flex-col items-center gap-4">
-            <div className="relative w-12 h-12">
-              <div className="absolute inset-0 rounded-full border border-blue-500/20" />
-              <div className="absolute inset-0 rounded-full border-t border-blue-500 animate-spin" />
+        <div className="max-w-3xl mx-auto px-4 py-6 space-y-4">
+          {[1, 2, 3].map(i => (
+            <div key={i} className={`rounded-2xl border p-5 space-y-3 ${isDark ? "bg-neutral-900 border-neutral-800" : "bg-white border-neutral-200"}`}>
+              <div className="flex items-center gap-3">
+                <div className={`w-10 h-10 rounded-xl animate-pulse ${isDark ? "bg-neutral-800" : "bg-neutral-200"}`} />
+                <div className="space-y-1.5 flex-1">
+                  <div className={`h-3 w-32 rounded animate-pulse ${isDark ? "bg-neutral-800" : "bg-neutral-200"}`} />
+                  <div className={`h-2 w-16 rounded animate-pulse ${isDark ? "bg-neutral-800" : "bg-neutral-200"}`} />
+                </div>
+              </div>
+              <div className={`rounded-xl animate-pulse ${isDark ? "bg-neutral-800" : "bg-neutral-200"}`} style={{ aspectRatio: "16/9" }} />
+              <div className={`h-4 w-3/4 rounded animate-pulse ${isDark ? "bg-neutral-800" : "bg-neutral-200"}`} />
             </div>
-            <p className={`text-[10px] ${textMuted} tracking-[0.3em] uppercase font-mono`}>
-              Initializing feed
-            </p>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (videoList.length === 0) {
-    return (
-      <div className={`min-h-screen ${bg} flex flex-col`}>
-        <Navbar />
-        <div className="flex-1 flex items-center justify-center">
-          <div className="text-center space-y-6 max-w-sm px-6">
-            <div
-              className={`w-20 h-20 rounded-2xl border flex items-center justify-center text-4xl mx-auto ${
-                isDark ? "bg-neutral-900 border-neutral-800" : "bg-white border-neutral-200"
-              }`}
-            >
-              📡
-            </div>
-            <div>
-              <p className={`font-semibold text-xl ${text}`}>No broadcasts yet</p>
-              <p className={`text-sm mt-2 ${textMuted}`}>
-                Upload from <a href="/admin" className="text-blue-500 hover:text-blue-400">Admin</a>{" "}
-                or restore from blockchain
-              </p>
-            </div>
-            <div className="flex justify-center">
-              <SyncButton onSyncComplete={fetchVideos} />
-            </div>
-          </div>
+          ))}
         </div>
       </div>
     );
@@ -241,189 +328,55 @@ export default function Home() {
   return (
     <div className={`min-h-screen ${bg} ${text} transition-colors duration-300`}>
       <Navbar />
+      {playingItem && <VideoModal item={playingItem} onClose={() => setPlayingItem(null)} isDark={isDark} />}
+      {previewImage && <ImageLightbox item={previewImage} onClose={() => setPreviewImage(null)} isDark={isDark} />}
 
-      <div className="max-w-screen-2xl mx-auto px-4 sm:px-6 py-6 flex flex-col lg:flex-row gap-6">
-        <div className="flex-1 min-w-0 space-y-4">
-          <div
-            className={`relative rounded-2xl overflow-hidden shadow-2xl ring-1 aspect-video ${
-              isDark ? "bg-black ring-white/8" : "bg-neutral-900 ring-neutral-300"
-            }`}
-          >
-            <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-blue-500/40 to-transparent z-10" />
-            <div className="absolute top-0 left-0 w-8 h-8 border-t border-l border-blue-500/30 rounded-tl-2xl z-10" />
-            <div className="absolute top-0 right-0 w-8 h-8 border-t border-r border-blue-500/30 rounded-tr-2xl z-10" />
-
-            <VideoPlayer
-              videoId={currentVideo?.videoId || currentVideo?.id}
-              playlistUrl={currentVideo ? `http://localhost:3001${currentVideo.playlistUrl}` : null}
-              onVerify={(status, details) => {
-                setVerified(status);
-                setVerifyDetails(details);
-              }}
-            />
+      <div className="max-w-3xl mx-auto px-4 py-6 space-y-4">
+        {/* Filter bar */}
+        <div className={`rounded-2xl border px-5 py-3 flex items-center gap-3 ${isDark ? "bg-neutral-900 border-neutral-800" : "bg-white border-neutral-200"}`}>
+          <div className="flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse shadow-[0_0_6px_#ef4444]" />
+            <span className={`text-[10px] font-bold uppercase tracking-widest ${textMuted}`}>Live Feed</span>
           </div>
-
-          <VerificationBadge
-            verified={verified}
-            details={verifyDetails}
-            videoId={currentVideo?.videoId || currentVideo?.id}
-          />
-
-          <ForensicPanel
-            forensicStatus={currentVideo?.forensicStatus}
-            forensicError={currentVideo?.forensicError}
-            forensicReportCid={currentVideo?.forensicReportCid}
-            forensicReportUrl={currentVideo?.forensicReportUrl}
-            forensics={currentVideo?.forensics}
-          />
-
-          <div className={`rounded-2xl border p-5 space-y-4 ${cardBg}`}>
-            <div className="flex items-start justify-between gap-4 flex-wrap">
-              <div className="space-y-1">
-                <h1 className={`text-xl font-bold leading-tight ${text}`}>{currentVideo?.title}</h1>
-                {currentVideo?.description && (
-                  <p className={`text-sm leading-relaxed ${textMuted}`}>
-                    {currentVideo.description}
-                  </p>
-                )}
-              </div>
-
-              <button
-                onClick={() => navigate(`/video/${currentVideo?.videoId || currentVideo?.id}`)}
-                className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold rounded-xl transition-all shadow-lg shadow-blue-900/30 flex-shrink-0"
-              >
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"
-                  />
-                </svg>
-                View Full Details
+          <div className={`flex gap-1 rounded-lg p-0.5 flex-1 max-w-[280px] ${isDark ? "bg-neutral-800" : "bg-neutral-100"}`}>
+            {[
+              { key: "all", label: `All (${feedList.length})` },
+              { key: "video", label: `Video (${videoCount})` },
+              { key: "image", label: `Image (${imageCount})` },
+            ].map(({ key, label }) => (
+              <button key={key} onClick={() => { setFilter(key); setPage(1); }}
+                className={`flex-1 text-[10px] font-mono py-1.5 rounded-md transition-all ${filter === key ? (isDark ? "bg-white/10 text-white" : "bg-white text-neutral-900 shadow-sm") : textMuted}`}>
+                {label}
               </button>
-            </div>
-
-            <div className="flex items-center gap-2 flex-wrap">
-              {[
-                { label: `${currentVideo?.totalSegments ?? 0} segments` },
-                { label: formatDuration((currentVideo?.totalSegments ?? 0) * 2) },
-                { label: timeAgo(currentVideo?.registeredAt) },
-              ].map(({ label }) => (
-                <span
-                  key={label}
-                  className={`inline-flex items-center border rounded-md px-2.5 py-1 text-[11px] font-mono ${
-                    isDark
-                      ? "bg-white/5 border-white/10 text-neutral-400"
-                      : "bg-neutral-100 border-neutral-200 text-neutral-500"
-                  }`}
-                >
-                  {label}
-                </span>
-              ))}
-
-              {currentVideo?.blockchainStatus === "ready" && (
-                <span className="inline-flex items-center gap-1 border rounded-md px-2.5 py-1 text-[11px] font-mono text-emerald-500 bg-emerald-950/20 border-emerald-800/30">
-                  ⛓ Blockchain
-                </span>
-              )}
-
-              {currentVideo?.c2paStatus === "signed" && (
-                <span className="inline-flex items-center gap-1 border rounded-md px-2.5 py-1 text-[11px] font-mono text-violet-500 bg-violet-950/20 border-violet-800/30">
-                  📋 C2PA
-                </span>
-              )}
-
-              {currentVideo?.ipfsStatus === "uploaded" && (
-                <span className="inline-flex items-center gap-1 border rounded-md px-2.5 py-1 text-[11px] font-mono text-orange-500 bg-orange-950/20 border-orange-800/30">
-                  📌 IPFS
-                </span>
-              )}
-
-              {currentVideo?.forensicLabel && (
-                <span
-                  className={`inline-flex items-center gap-1 border rounded-md px-2.5 py-1 text-[11px] font-mono ${
-                    currentVideo.forensicLabel === "Authentic"
-                      ? "text-emerald-500 bg-emerald-950/20 border-emerald-800/30"
-                      : currentVideo.forensicLabel === "Suspicious"
-                      ? "text-amber-500 bg-amber-950/20 border-amber-800/30"
-                      : "text-red-500 bg-red-950/20 border-red-800/30"
-                  }`}
-                >
-                  🔬 {currentVideo.forensicLabel}
-                </span>
-              )}
-            </div>
-
-            <div className="flex items-center gap-3 pt-1 border-t border-white/5">
-              <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-600 to-indigo-700 flex items-center justify-center text-[10px] font-black text-white">
-                TS
-              </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className={`text-sm font-semibold ${text}`}>TrustStream News</span>
-                  <span className="text-[9px] font-bold text-blue-400 bg-blue-500/10 border border-blue-500/25 px-1.5 py-0.5 rounded uppercase">
-                    Verified
-                  </span>
-                </div>
-                <div className="flex items-center gap-1.5 mt-0.5">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                  <span className={`text-[10px] font-mono ${textMuted}`}>
-                    Live blockchain authentication
-                  </span>
-                </div>
-              </div>
-            </div>
+            ))}
           </div>
         </div>
 
-        <div className="lg:w-[300px] xl:w-[320px] flex-shrink-0 flex flex-col gap-3 lg:max-h-[calc(100vh-80px)] lg:overflow-y-auto lg:pr-1">
-          <div className={`rounded-xl border p-3 ${cardBg}`}>
-            <SyncButton onSyncComplete={fetchVideos} />
-          </div>
-
-          <div className="flex items-center gap-3 px-1">
-            <div className="flex items-center gap-2">
-              <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse shadow-[0_0_8px_#ef4444]" />
-              <span className={`text-[10px] font-bold uppercase tracking-widest ${textMuted}`}>
-                Live Feed
-              </span>
+        {/* Empty */}
+        {filteredFeed.length === 0 && (
+          <div className={`rounded-2xl border p-12 text-center space-y-4 ${isDark ? "bg-neutral-900 border-neutral-800" : "bg-white border-neutral-200"}`}>
+            <div className={`w-16 h-16 rounded-2xl border flex items-center justify-center text-3xl mx-auto ${isDark ? "bg-neutral-800 border-neutral-700" : "bg-neutral-100 border-neutral-200"}`}>📡</div>
+            <div>
+              <p className={`font-semibold ${text}`}>No content yet</p>
+              <p className={`text-sm mt-1 ${textMuted}`}>Sync from blockchain or check back later</p>
             </div>
-            <div
-              className={`flex-1 h-px bg-gradient-to-r to-transparent ${
-                isDark ? "from-neutral-800" : "from-neutral-200"
-              }`}
-            />
-            <span className={`text-[9px] font-mono ${textMuted}`}>
-              {videoList.length} broadcast{videoList.length !== 1 ? "s" : ""}
-            </span>
           </div>
+        )}
 
-          <div className="space-y-1">
-            {videoList.map((video) => {
-              const isActive =
-                selected?.id === video.id || selected?.videoId === video.videoId;
+        {/* Cards */}
+        {paginatedFeed.map((item) => {
+          const key = item.videoId || item.imageId || item.id;
+          return item.mediaType === "image"
+            ? <ImagePostCard key={key} item={item} onOpen={setPreviewImage} isDark={isDark} />
+            : <VideoPostCard key={key} item={item} onPlay={setPlayingItem} isDark={isDark} />;
+        })}
 
-              return (
-                <VideoCard
-                  key={video.videoId || video.id}
-                  v={video}
-                  isActive={isActive}
-                  onClick={() => setSelected(video)}
-                  formatDuration={formatDuration}
-                  timeAgo={timeAgo}
-                  isDark={isDark}
-                />
-              );
-            })}
-          </div>
-
-          <div className={`mt-auto pt-4 border-t px-1 ${isDark ? "border-white/6" : "border-neutral-200"}`}>
-            <p className={`text-[9px] font-mono text-center ${textMuted}`}>
-              TrustStream v1.0 · C2PA v2.2 · Sepolia
-            </p>
-          </div>
-        </div>
+        {hasMore && (
+          <button onClick={() => setPage(p => p + 1)}
+            className={`w-full py-3 rounded-2xl border text-sm font-semibold transition-all ${isDark ? "bg-neutral-900 border-neutral-800 text-neutral-400 hover:text-white" : "bg-white border-neutral-200 text-neutral-500 hover:text-neutral-900"}`}>
+            Load more
+          </button>
+        )}
       </div>
     </div>
   );

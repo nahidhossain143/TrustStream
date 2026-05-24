@@ -1,0 +1,193 @@
+{
+  "@context": "https://c2pa.org/manifest/v1",
+  "spec_version": "2.2",
+  "claim_generator": "TrustStream/1.0 c2pa-spec/2.2",
+  "media_type": "image",
+  "title": "ohh",
+  "format": "image/jpeg",
+  "instance_id": "urn:truststream:image:816fd589-6f72-418c-af49-2a78638c2dac",
+  "assertions": [
+    {
+      "label": "c2pa.hash.data",
+      "data": {
+        "algorithm": "sha2-256",
+        "hash": "cbba1ed0dc451bf5087c47f9bd04bc6868814a83076407d27448a4ca94a0df96",
+        "name": "img_816fd589-6f72-418c-af49-2a78638c2dac.jpg",
+        "file_size": 144323,
+        "exclusions": []
+      }
+    },
+    {
+      "label": "c2pa.actions",
+      "data": {
+        "actions": [
+          {
+            "action": "c2pa.created",
+            "when": "2026-05-23T16:37:26.189Z",
+            "softwareAgent": "TrustStream/1.0 c2pa-spec/2.2",
+            "description": "Original image content captured and ingested into TrustStream pipeline",
+            "parameters": {
+              "original_filename": "2.jpg",
+              "mime_type": "image/jpeg"
+            }
+          },
+          {
+            "action": "c2pa.published",
+            "when": "2026-05-23T16:37:26.205Z",
+            "softwareAgent": "TrustStream/1.0 c2pa-spec/2.2",
+            "description": "Image published to TrustStream decentralized news platform",
+            "parameters": {
+              "platform": "TrustStream",
+              "image_id": "816fd589-6f72-418c-af49-2a78638c2dac",
+              "distribution": "IPFS + Ethereum Sepolia"
+            }
+          }
+        ],
+        "allActionsIncluded": true
+      }
+    },
+    {
+      "label": "c2pa.claim_generator_info",
+      "data": {
+        "name": "TrustStream",
+        "version": "1.0.0",
+        "operating_system": "win32",
+        "description": "Decentralized Trust and Provenance for C2PA-Compliant Digital News Streaming",
+        "homepage": "https://github.com/nahidhossain143/TrustStream",
+        "spec_version": "2.2",
+        "institution": "Ahsanullah University of Science and Technology",
+        "program": "B.Sc. in Computer Science and Engineering"
+      }
+    },
+    {
+      "label": "stds.schema-org.CreativeWork",
+      "data": {
+        "@context": "https://schema.org",
+        "@type": "ImageObject",
+        "name": "ohh",
+        "description": "hmmm",
+        "dateCreated": "2026-05-23T16:37:26.189Z",
+        "datePublished": "2026-05-23T16:37:26.205Z",
+        "encodingFormat": "image/jpeg",
+        "identifier": "816fd589-6f72-418c-af49-2a78638c2dac",
+        "publisher": {
+          "@type": "Organization",
+          "name": "TrustStream News Network",
+          "description": "Decentralized authenticated news platform"
+        },
+        "creator": {
+          "@type": "Organization",
+          "name": "NewsAgency",
+          "description": "Primary content registrar in TrustStream consortium"
+        }
+      }
+    },
+    {
+      "label": "c2pa.ingredient",
+      "data": {
+        "title": "2.jpg",
+        "format": "image/jpeg",
+        "relationship": "parentOf",
+        "description": "Original image file uploaded directly to TrustStream - no transcoding applied",
+        "instance_id": "urn:truststream:image:source:816fd589-6f72-418c-af49-2a78638c2dac",
+        "data_types": [
+          "image/jpeg"
+        ],
+        "validationStatus": [
+          {
+            "code": "claimSignature.validated",
+            "explanation": "Image validated from original upload",
+            "url": null
+          }
+        ]
+      }
+    },
+    {
+      "label": "c2pa.timestamp",
+      "data": {
+        "timestamp": "2026-05-23T16:37:26.206Z",
+        "created_at": "2026-05-23T16:37:26.189Z",
+        "proof_hash": "d619985f8911b2b49c895e4b396f08c58d08893b4b7eb27c7b28170bd1727e5e",
+        "method": "local-hmac",
+        "note": "Production implementation would use RFC 3161 trusted timestamp authority (TSA)",
+        "asset_reference": {
+          "media_id": "816fd589-6f72-418c-af49-2a78638c2dac",
+          "identifier": "image",
+          "sha256": "cbba1ed0dc451bf5087c47f9bd04bc6868814a83076407d27448a4ca94a0df96"
+        }
+      }
+    },
+    {
+      "label": "truststream.consortium",
+      "data": {
+        "spec": "TrustStream Consortium Endorsement v1.0",
+        "blockchain": {
+          "network": "Ethereum Sepolia Testnet",
+          "chain_id": 11155111,
+          "contract_address": "0x0Fb5481FdCE1BD99d70CaCBf879bB9315CA8aCDc",
+          "rpc_provider": "Alchemy"
+        },
+        "organizations": [
+          {
+            "name": "NewsAgency",
+            "role": "Submitter",
+            "address": "0x13EF2Ab9b77e3c9c4B1B654190320C94d3296A09",
+            "action": "Registers media hash on blockchain",
+            "order": 1
+          },
+          {
+            "name": "Broadcaster",
+            "role": "Endorser",
+            "address": "0x792C62F52B2E6451C10F76619c785Bf1133A5869",
+            "action": "Endorses registered hash",
+            "order": 2
+          },
+          {
+            "name": "Auditor",
+            "role": "Endorser",
+            "address": "0x91F82a580C5aAb605AC39c18a56B36f047A84c11",
+            "action": "Final endorsement and verification",
+            "order": 3
+          }
+        ],
+        "endorsement_policy": {
+          "minimum_required": 2,
+          "total_organizations": 3,
+          "policy": "2-of-3 consortium endorsement required for validation"
+        },
+        "decentralized_storage": {
+          "provider": "IPFS via Pinata",
+          "cid": null,
+          "gateway": null
+        },
+        "asset_reference": {
+          "media_id": "816fd589-6f72-418c-af49-2a78638c2dac",
+          "identifier": "image"
+        }
+      }
+    }
+  ],
+  "claim": {
+    "created_assertions": [
+      "c2pa.hash.data",
+      "c2pa.actions",
+      "c2pa.claim_generator_info",
+      "stds.schema-org.CreativeWork",
+      "c2pa.ingredient",
+      "c2pa.timestamp",
+      "truststream.consortium"
+    ],
+    "gathered_assertions": [],
+    "alg": "HMAC-SHA256",
+    "created_at": "2026-05-23T16:37:26.189Z"
+  },
+  "claim_signature": {
+    "alg": "HMAC-SHA256",
+    "signer": "NewsAgency",
+    "signer_address": "0x13EF2Ab9b77e3c9c4B1B654190320C94d3296A09",
+    "signer_org": "TrustStream News Network",
+    "sig": "d0402d74436ca2d4c1120f1e5a8f0b02f0ad1ce67a7dab116623bd923e254791",
+    "signed_at": "2026-05-23T16:37:26.207Z",
+    "note": "Production implementation uses X.509 PKI certificates per C2PA spec"
+  }
+}
