@@ -19,10 +19,13 @@ app.use(express.json());
 // Render-এর হার্ডড্রাইভ থেকে যেন ভিডিওগুলো প্লে হয়
 const storageRoot = process.env.STORAGE_PATH || path.join(__dirname, "../");
 const streamsDir = path.join(storageRoot, "public/streams");
+const thumbnailsDir = path.join(storageRoot, "public/thumbnails");
 // ----------------------------
 
 // Serve local HLS stream files from the persistent disk
 app.use("/streams", express.static(streamsDir));
+// Serve uploaded video thumbnails (poster images shown before playback)
+app.use("/thumbnails", express.static(thumbnailsDir));
 
 // Root Health Check (Render এ Cannot GET / এরর ঠিক করার জন্য)
 app.get("/", (req, res) => {

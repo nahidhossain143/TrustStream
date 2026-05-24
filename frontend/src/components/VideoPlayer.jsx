@@ -49,7 +49,7 @@ function TamperOverlay({ segmentIndex, onDismiss }) {
 }
 
 // ─── Main VideoPlayer ─────────────────────────────────────
-export default function VideoPlayer({ videoId, playlistUrl, onVerify }) {
+export default function VideoPlayer({ videoId, playlistUrl, posterUrl, onVerify }) {
   const videoRef = useRef(null);
   const activeSegmentRef = useRef(null);
   const verificationCache = useRef({});
@@ -208,6 +208,7 @@ export default function VideoPlayer({ videoId, playlistUrl, onVerify }) {
         ref={videoRef}
         controls
         autoPlay
+        poster={posterUrl || undefined}
         className="w-full h-full rounded-xl bg-black"
       />
 
