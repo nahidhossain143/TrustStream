@@ -14,6 +14,8 @@ Uploaded & generated video files
 backend/public/uploads/
 backend/public/streams/
 backend/data/catalog/
+backend/public/images/
+backend/public/thumbnails/
 
 Frontend build output
 frontend/dist/
