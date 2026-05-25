@@ -521,16 +521,12 @@ TrustStream/
 │   │   │   ├── catalog.service.js           # Local manifest read/write/list (kind: video|image)
 │   │   │   ├── c2pa.service.js              # C2PA v2.2 generate/sign/verify (in-memory + sidecar)
 │   │   │   ├── ipfs.service.js              # Pinata upload (image, segment, JSON, sidecar), gateway, fetch
-│   │   │   ├── forensics.service.js         # Video forensics (compression, temporal, AV sync)
+│   │   │   ├── forensics.service.js         # Video forensics coordinator
+│   │   │   ├── compression.service.js       # Module 1: Compression forensics (FFmpeg frame size analysis)
+│   │   │   ├── temporal.service.js          # Module 2: Temporal consistency (frame-by-frame diff)
+│   │   │   ├── avsync.service.js            # Module 3: Audio-video sync drift analysis
+│   │   │   ├── forensic.service.js          # Module 4: Score fusion engine + forensic report generation
 │   │   │   └── image-forensics.service.js   # Image forensics (JPEG quant + EXIF)
-│   │   │   ├── blockchain.service.js      # register, endorse, verify, receipt, balance, reportTamper
-│   │   │   ├── catalog.service.js         # local manifest read/write/list
-│   │   │   ├── c2pa.service.js            # C2PA v2.2 manifest generate, sign, verify
-│   │   │   ├── ipfs.service.js            # Pinata upload, gateway, fetch
-│   │   │   ├── compression.service.js     # Module 1: Compression forensics (FFmpeg frame size analysis)
-│   │   │   ├── temporal.service.js        # Module 2: Temporal consistency (frame-by-frame diff)
-│   │   │   ├── avsync.service.js          # Module 3: Audio-video sync drift analysis
-│   │   │   └── forensic.service.js        # Module 4: Score fusion engine + forensic report generation
 │   │   ├── routes/
 │   │   │   └── upload.routes.js             # All video + image endpoints, unified /feed, sync
 │   │   └── server.js                        # Express entry — serves /streams + /thumbnails

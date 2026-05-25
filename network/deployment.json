@@ -1,7 +1,7 @@
 {
-  "address": "0x6a895b97872f83ddbDf53c5d773A2619a4B42db7",
-  "txHash": "0x006bdbabbe1a1e7bc07020197d480e6bbc17d92a07b59744e5946d8f94ae30ae",
-  "blockNumber": 10911440,
+  "address": "0xBff060E6c5053A2ede6c50A67ab0122403441B9F",
+  "txHash": "0x5e6e57af677506d509fa496bbbab376f9b4dfb62dd17360652b85e7abbd9c1bc",
+  "blockNumber": 10921075,
   "gasUsed": "3263488",
   "deployer": "0x13EF2Ab9b77e3c9c4B1B654190320C94d3296A09",
   "organizations": {
@@ -17,7 +17,7 @@
   },
   "network": "sepolia",
   "chainId": 11155111,
-  "deployedAt": "2026-05-24T11:04:39.084Z",
+  "deployedAt": "2026-05-25T19:31:38.328Z",
   "constructorArgs": [
     "0x13EF2Ab9b77e3c9c4B1B654190320C94d3296A09",
     "0x792C62F52B2E6451C10F76619c785Bf1133A5869",
