@@ -948,25 +948,52 @@ GET /api/upload/blockchain/revocation-timeline?id=<mediaId>&kind=video|image
 
 ---
 
-## Storage Summary
+### Storage Summary
 
 | Asset | Local | IPFS | Ethereum | Notes |
-|-------|-------|------|----------|-------|
-| Video original MP4 | ❌ Temp | ❌ | ❌ | Deleted after FFmpeg |
-| Video HLS segments | ✅ `public/streams/` | ✅ Pinned | (hash anchored) | Local for fast HLS playback |
-| Video `.c2pa` sidecars | ✅ Next to segments | (in metadata JSON) | (hash anchored) | Allows offline verification |
-| Video metadata JSON | — | ✅ Pinned | (cid anchored) | Sole source for sync recovery |
-| Video forensic report | — | ✅ Pinned | (cid in metadata) | — |
-| Video thumbnail | ✅ `public/thumbnails/` | — | — | Poster image, not part of provenance |
-| **Image bytes** | ❌ **Deleted after pin** | ✅ Pinned | (hash anchored) | **IPFS-only** |
-| **Image C2PA sidecar** | ❌ **Never written to disk** | ✅ Pinned | (hash anchored) | **IPFS-only** |
-| Image metadata JSON | — | ✅ Pinned | (cid anchored) | Includes sidecar CID + forensics |
-| Manifest catalog (cache) | ✅ `data/catalog/*` | — | — | Reproducible from chain via sync |
+| :--- | :--- | :--- | :--- | :--- |
+| **Video original MP4** | ❌ Temp | ❌ | ❌ | Deleted after FFmpeg |
+| **Video HLS segments** | ✅ `public/streams/` | ✅ Pinned | *(hash anchored)* | Local for fast HLS playback |
+| **Video .c2pa sidecars** | ✅ Next to segments | *(in metadata JSON)* | *(hash anchored)* | Allows offline verification |
+| **Video metadata JSON** | — | ✅ Pinned | *(cid anchored)* | Sole source for sync recovery |
+| **Video forensic report** | — | ✅ Pinned | *(cid in metadata)* | — |
+| **Video thumbnail** | ✅ `public/thumbnails/` | — | — | Poster image, not part of provenance |
+| **Image bytes** | ❌ Deleted after pin | ✅ Pinned | *(hash anchored)* | IPFS-only |
+| **Image C2PA sidecar** | ❌ Never written to disk | ✅ Pinned | *(hash anchored)* | IPFS-only |
+| **Image metadata JSON** | — | ✅ Pinned | *(cid anchored)* | Includes sidecar CID + forensics |
+| **Manifest catalog (cache)**| ✅ `data/catalog/*` | — | — | Reproducible from chain via sync |
 
-The local manifest catalog is just a cache — every byte of canonical content lives on IPFS, every authoritative status lives on Ethereum.
+> **Note:** The local manifest catalog is just a cache — every byte of canonical content lives on IPFS, every authoritative status lives on Ethereum.
 
 ---
 
 ## Immutability Guarantees
 
-The thesis core promise is "uploaded content cannot be deleted."... (3 KB left)
+The thesis core promise is **"uploaded content cannot be deleted."** This is enforced at four layers:
+
+* **Smart contract:** There is NO `delete*` function anywhere. Only `revoke*` (status flip). The `VideoRecord` / `ImageRecord` stays in storage forever, just with `status = Revoked`. Status guards prevent revoked / disputed media from accepting further endorsements.
+* **IPFS:** Content-addressed by definition. Even if Pinata unpins, the CID still resolves on any other IPFS node that has the content. Hashes anchored on Ethereum let any third party detect substitution.
+* **HTTP API:** There are NO `DELETE` routes. The only mutation endpoints are `report-tamper` (with per-layer guard rails) and on-chain status flips. The Admin UI exposes no delete affordance.
+* **Catalog service:** `removeManifest()` exists for internal sync hygiene only, NOT exposed via any route. The Revocation Timeline endpoint reads and displays the catalog merge — but never deletes from it.
+
+*The Revocation Timeline Visual reinforces all four layers by making the full immutable event log visible and navigable by any user, with direct links to on-chain TX receipts and IPFS-pinned content.*
+
+---
+
+## What's New
+
+### v2 — Live News Streaming + Revocation Timeline (May 2026)
+* **Live news streaming:** Platform repositioned from digital news archive to active live news streaming with real-time per-segment hash verification during HLS playback.
+* **Revocation Timeline Visual:** New `GET /api/upload/blockchain/revocation-timeline?id=xxx&kind=video|image` endpoint; new `RevocationTimeline.jsx` page at `/timeline/:kind/:id`; linked from every feed card and detail page.
+* **Contract redeployed:** New canonical address `0x3ee8f0B4b1DFa9D79068aEB1cC9D369Ab6DC53F9` on Sepolia; ABI bundle auto-exported to both backend and frontend.
+* **Browser-side endorsement:** `wallet.js` calls `endorseSegment` / `endorseImage` directly via MetaMask using the ABI bundle; Broadcaster and Auditor can endorse without a backend wallet.
+* **Merge conflicts resolved:** README cleaned; HEAD branch is authoritative; `image-forensics.service.js` and `forensics.service.js` are confirmed present in the HEAD branch services directory.
+
+### v1 — Image Flow + Facebook Timeline (March 2026)
+* **Full image upload pipeline:** IPFS-only, zero local persistence.
+* **`image-forensics.service.js`:** AI-free image risk scoring (JPEG quant + EXIF).
+* **Facebook-style feed:** Single-column timeline with mixed video + image posts.
+* **`ImageDetail.jsx`:** Features 7-assertion C2PA display and forensic panel.
+* **Unified API:** `/feed` endpoint and `sync-from-blockchain` covering both media kinds.
+* **Smart contract extended:** Complete image entity added (`registerImage`, `endorseImage`, `reportImageTamper`, `revokeImage`, `verifyImage`).
+* **Admin page:** Tabbed Video / Image upload with an animated pipeline visualizer.
