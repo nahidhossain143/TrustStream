@@ -1,7 +1,7 @@
 # TrustStream 📡
-### Decentralized Trust and Provenance for C2PA-Compliant Digital News (Video + Image)
+### Decentralized Trust and Provenance for C2PA-Compliant Live News Streaming (Video + Image)
 
-> A research-based, tamper-resistant, **Facebook-style decentralized news platform** integrating **Ethereum Sepolia Testnet**, **C2PA v2.2 Provenance Manifests**, **IPFS via Pinata**, **SHA-256 Chain Hashing**, **HLS Streaming**, and **AI-free forensic analysis** to verify the authenticity of every video segment AND every news image in near real-time.
+> A research-based, tamper-resistant, **Facebook-style decentralized live news streaming platform** integrating **Ethereum Sepolia Testnet**, **C2PA v2.2 Provenance Manifests**, **IPFS via Pinata**, **SHA-256 Chain Hashing**, **HLS Streaming**, and **AI-free forensic analysis** to verify the authenticity of every video segment AND every news image in near real-time.
 
 **Institution:** Ahsanullah University of Science and Technology (AUST)
 **Program:** B.Sc. in Computer Science and Engineering
@@ -32,6 +32,7 @@
 - [Forensics (AI-Free)](#forensics-ai-free)
 - [Forensic Analysis Modules](#forensic-analysis-modules)
 - [Experimental Results](#experimental-results)
+- [Revocation Timeline Visual](#revocation-timeline-visual)
 - [Blockchain Info](#blockchain-info)
 - [IPFS Info](#ipfs-info)
 - [Storage Summary](#storage-summary)
@@ -42,7 +43,7 @@
 
 ## Project Overview
 
-TrustStream has evolved into a **full Facebook-style decentralized news platform** with end-to-end authentication pipelines for **both video and image** media. The original thesis core — video authentication via a 3-organization consortium + AI-free forensics + C2PA + IPFS + blockchain — is fully intact, with the image flow added as a clean parallel that reuses the same infrastructure with adapted modules.
+TrustStream has evolved into a **full Facebook-style decentralized live news streaming platform** with end-to-end authentication pipelines for **both video and image** media. The original thesis core — video authentication via a 3-organization consortium + AI-free forensics + C2PA + IPFS + blockchain — is fully intact, with the image flow added as a clean parallel that reuses the same infrastructure with adapted modules.
 
 ### Smart Contract Layer
 
@@ -51,8 +52,10 @@ The original `TrustStream.sol` has been extended with a complete image entity:
 - `registerImage`, `endorseImage`, `reportImageTamper`, `revokeImage`, `verifyImage`, `getImage`, `getImageEndorsements`, `getImageStatus`
 - Same 3-organization consortium model as the video flow (NewsAgency uploads, Broadcaster + Auditor endorse)
 - A shared `MediaStatus` enum manages both videos and images
-- Deployed to Sepolia Testnet at `0x6a895b97872f83ddbDf53c5d773A2619a4B42db7`, verified on Sourcify (Etherscan verification ready, pending API key)
+- Deployed to Sepolia Testnet at `0x3ee8f0B4b1DFa9D79068aEB1cC9D369Ab6DC53F9`, verified on Sourcify (Etherscan verification ready, pending API key)
 - **No `delete*` function anywhere — only `revoke*` (status flip)**, naturally enforcing the thesis core promise: *"uploaded content cannot be deleted"*
+
+> **Deployment note:** The contract must be deployed from the `network/` folder using Hardhat before the frontend and backend will function. The deployed address `0x3ee8f0B4b1DFa9D79068aEB1cC9D369Ab6DC53F9` is already wired into both `backend/src/config/TrustStream.abi.json` and `frontend/src/services/TrustStream.abi.json` via the auto-export in `deploy.js`. The frontend's browser-side wallet (MetaMask) reads the ABI bundle and handles all endorsement calls directly on-chain — no backend wallet is needed for Broadcaster or Auditor endorsements in the browser flow.
 
 ### Backend
 
@@ -92,6 +95,7 @@ The Home page is now a centered single-column vertical feed (max-width 3xl). Eac
 - Click-to-play video opens a fullscreen modal with HLS playback + auto per-segment hash verification + tamper overlay
 - Click-to-zoom image opens a fullscreen lightbox served directly from the IPFS gateway
 - "View Details" link on each card jumps to `/video/:id` or `/image/:id`
+- "View Timeline" link on each card jumps to `/timeline/:kind/:id` — the new Revocation Timeline Visual
 
 A sticky filter pill bar at the top toggles between **All / Video / Image**.
 
@@ -103,13 +107,14 @@ The Admin page uses a tab switcher to separate Video Upload from Image Upload, e
 
 The Video Upload form also accepts an optional **thumbnail image**, which becomes the `<video poster>` shown before HLS playback.
 
-All components are fully theme-aware (dark + light), `api.js` provides complete coverage for both flows (`videoAPI`, `imageAPI`, `feedAPI`, `syncAPI`), and `App.jsx` includes the `/image/:imageId` route alongside the existing video route.
+All components are fully theme-aware (dark + light), `api.js` provides complete coverage for both flows (`videoAPI`, `imageAPI`, `feedAPI`, `syncAPI`, `timelineAPI`), and `App.jsx` includes the `/image/:imageId` and `/timeline/:kind/:id` routes alongside the existing video route.
 
 ### Net Result
 
-- Contract layer extended and deployed
+- Contract deployed at `0x3ee8f0B4b1DFa9D79068aEB1cC9D369Ab6DC53F9` and ABI auto-exported to both backend and frontend
 - Backend services all image-aware with the new forensics module
 - Frontend transformed to a Facebook timeline aesthetic with proper detail pages for both kinds
+- **Revocation Timeline Visual** added — full media lifecycle viewable as an interactive vertical timeline
 - **Immutability preserved at all four layers** (see [Immutability Guarantees](#immutability-guarantees) below)
 - Full end-to-end test passed: image upload → forensic → C2PA → IPFS → blockchain → on-chain registration → sync recovery
 - **Demo ready.**
@@ -149,6 +154,7 @@ All components are fully theme-aware (dark + light), `api.js` provides complete 
    Video modal       Chain Linking                TX Receipt + Block
    Per-card poster   In-memory C2PA sign          IPFS Content CID
    Forensic risk     Catalog cache (rebuildable)  Tamper / Disputed Status
+   Revocation Timeline                            Revocation Timeline API
 ```
 
 ### Video Upload Flow (HLS + local cache + IPFS + chain)
@@ -242,6 +248,24 @@ New machine / fresh start
   → Both kinds restored without ever touching the original uploader machine
 ```
 
+### Revocation Timeline Flow
+
+```text
+User clicks "View Timeline" on any media card
+  → Frontend calls GET /api/upload/blockchain/revocation-timeline?id=xxx&kind=video|image
+  → Backend reads all TxLogs from on-chain for that media ID
+  → Backend merges with local catalog (C2PA signed events, IPFS upload events)
+  → Events sorted chronologically (oldest → newest)
+  → Response: { mediaId, kind, status, title, events[] }
+  → Frontend renders RevocationTimeline.jsx:
+       → Vertical timeline — each event is a color-coded card
+       → Event types: upload, c2pa, ipfs, register, endorsement, tamper, disputed, revoked
+       → TX hash links to Sepolia Etherscan
+       → IPFS CIDs link to Pinata gateway
+       → Current status badge at the top (Active / Disputed / Revoked)
+       → Immutability proof footer
+```
+
 ---
 
 ## Tech Stack
@@ -261,7 +285,7 @@ New machine / fresh start
 | Blockchain | Solidity ^0.8.0, Web3.js 4, Alchemy RPC |
 | Smart Contract | TrustStream.sol (video + image, shared MediaStatus) |
 | Testnet | Ethereum Sepolia (chainId 11155111) |
-| Wallet | MetaMask |
+| Wallet | MetaMask (browser-side endorsement via `wallet.js`) |
 | Contract Deploy | Hardhat (single source of truth — auto-exports ABI bundle) |
 | TX Tracking | Receipt, block number, gas usage, Etherscan links |
 | Streaming | HLS (HTTP Live Streaming) |
@@ -303,6 +327,7 @@ ALCHEMY_API_KEY=your_alchemy_api_key
 PRIVATE_KEY=0xyour_newsagency_private_key
 BROADCASTER_KEY=0xyour_broadcaster_private_key
 AUDITOR_KEY=0xyour_auditor_private_key
+CONTRACT_ADDRESS=0x3ee8f0B4b1DFa9D79068aEB1cC9D369Ab6DC53F9
 NEWSAGENCY_ADDRESS=0xyour_newsagency_wallet_address
 BROADCASTER_ADDRESS=0xyour_broadcaster_wallet_address
 AUDITOR_ADDRESS=0xyour_auditor_wallet_address
@@ -317,7 +342,7 @@ IPFS_GATEWAY=https://gateway.pinata.cloud/ipfs
 Create `frontend/.env`:
 
 ```env
-VITE_CONTRACT_ADDRESS=0x6a895b97872f83ddbDf53c5d773A2619a4B42db7
+VITE_CONTRACT_ADDRESS=0x3ee8f0B4b1DFa9D79068aEB1cC9D369Ab6DC53F9
 VITE_RPC_URL=https://eth-sepolia.g.alchemy.com/v2/YOUR_KEY
 VITE_CLERK_PUBLISHABLE_KEY=your_clerk_publishable_key
 VITE_API_URL=http://localhost:3001
@@ -344,7 +369,7 @@ node src/server.js
 Expected output:
 
 ```text
-[blockchain] Contract loaded: 0x6a895b97872f83ddbDf53c5d773A2619a4B42db7
+[blockchain] Contract loaded: 0x3ee8f0B4b1DFa9D79068aEB1cC9D369Ab6DC53F9
 [blockchain] Network: sepolia (chainId: 11155111)
 [blockchain] Org accounts:
              NewsAgency:  0x...
@@ -393,10 +418,12 @@ npx hardhat run scripts/deploy.js --network sepolia
 
 After deploy:
 - `backend/src/config/TrustStream.abi.json` — auto-updated (used by backend)
-- `frontend/src/services/TrustStream.abi.json` — auto-updated (used by wallet.js)
+- `frontend/src/services/TrustStream.abi.json` — auto-updated (used by `wallet.js` for browser-side endorsement)
 - Update `VITE_CONTRACT_ADDRESS` in `frontend/.env` to the new address
 - Restart backend and frontend dev servers
 
+> **Important:** The frontend's `wallet.js` uses the auto-exported ABI bundle to call `endorseSegment` and `endorseImage` directly from the browser via MetaMask. After redeploying, the ABI bundle update is automatic — you only need to update `VITE_CONTRACT_ADDRESS`.
+>
 > **Hardhat config:** `viaIR: true` and the optimizer are enabled. The contract is also designed to compile in non-IR mode (Etherscan / Sourcify defaults), so verification works out of the box.
 
 ---
@@ -433,6 +460,13 @@ After deploy:
 - Click **View Details** on any card
 - **Video detail page:** metadata, blockchain (3-org grid), IPFS, C2PA (8 assertions), per-segment hash table
 - **Image detail page:** metadata, forensics (risk score + 2 modules + notes), blockchain, IPFS, C2PA (7 assertions, `chain_hash` marked N/A), dedicated immutability notice
+
+### View Revocation Timeline
+- Click **View Timeline** on any card, or navigate to `/timeline/video/:id` or `/timeline/image/:id`
+- Full media lifecycle rendered as a vertical timeline: upload → C2PA sign → IPFS pin → on-chain register → endorsements → tamper reports → disputed / revoked (if applicable)
+- Each event card is color-coded by type: local (gray), c2pa (purple), ipfs (teal), register (blue), endorsement (green), tamper (amber), disputed/revoked (red)
+- TX hashes link to Sepolia Etherscan; IPFS CIDs link to the Pinata gateway
+- Immutability proof footer confirms no events can be deleted from this log
 
 ### Manual Verify (Image)
 - On the image detail page, click **Verify**
@@ -495,6 +529,7 @@ After deploy:
 | `GET` | `/api/upload/blockchain/receipt/:txHash` | Full TX receipt |
 | `GET` | `/api/upload/blockchain/network-status` | Sepolia network status |
 | `GET` | `/api/upload/blockchain/wallet-balances` | 3 org wallet balances |
+| `GET` | `/api/upload/blockchain/revocation-timeline` | **Full media lifecycle timeline** — query params: `id` (mediaId) + `kind` (`video` or `image`) |
 
 ### Static
 
@@ -515,7 +550,7 @@ TrustStream/
 │   ├── src/
 │   │   ├── config/
 │   │   │   ├── blockchain.js                # Web3 + ABI bundle loader (single source of truth)
-│   │   │   └── TrustStream.abi.json         # Auto-exported by deploy.js
+│   │   │   └── TrustStream.abi.json         # Auto-exported by deploy.js (contract: 0x3ee8f0B4...)
 │   │   ├── services/
 │   │   │   ├── blockchain.service.js        # Video + image registers, endorsements, verify, tamper, revoke
 │   │   │   ├── catalog.service.js           # Local manifest read/write/list (kind: video|image)
@@ -528,7 +563,7 @@ TrustStream/
 │   │   │   ├── forensic.service.js          # Module 4: Score fusion engine + forensic report generation
 │   │   │   └── image-forensics.service.js   # Image forensics (JPEG quant + EXIF)
 │   │   ├── routes/
-│   │   │   └── upload.routes.js             # All video + image endpoints, unified /feed, sync
+│   │   │   └── upload.routes.js             # All video + image endpoints, unified /feed, sync, timeline
 │   │   └── server.js                        # Express entry — serves /streams + /thumbnails
 │   ├── data/
 │   │   └── catalog/
@@ -548,6 +583,7 @@ TrustStream/
 │       │   ├── Home.jsx                     # FB-style single-column feed (videos + images mixed)
 │       │   ├── VideoDetail.jsx              # Video full details (metadata, chain, IPFS, C2PA, segments)
 │       │   ├── Imagedetail.jsx              # Image full details (metadata, forensics, chain, IPFS, C2PA)
+│       │   ├── RevocationTimeline.jsx       # Full media lifecycle visual timeline (video + image)
 │       │   ├── Admin.jsx                    # Tabbed upload (Video + Image), thumbnail picker, pipeline UI
 │       │   └── Login.jsx                    # Clerk sign-in
 │       ├── components/
@@ -559,8 +595,8 @@ TrustStream/
 │       │   ├── ProtectedRoute.jsx           # Clerk-gated route wrapper
 │       │   └── SyncButton.jsx               # Sync-from-blockchain trigger
 │       ├── services/
-│       │   ├── api.js                       # videoAPI, imageAPI, feedAPI, syncAPI
-│       │   ├── wallet.js                    # MetaMask connect + chain check
+│       │   ├── api.js                       # videoAPI, imageAPI, feedAPI, syncAPI, timelineAPI
+│       │   ├── wallet.js                    # MetaMask connect + chain check + browser-side endorsement
 │       │   └── TrustStream.abi.json         # Auto-exported by deploy.js
 │       └── utils/
 │           └── hash.js                      # Browser SHA-256 (Web Crypto API)
@@ -571,7 +607,7 @@ TrustStream/
 │   ├── scripts/
 │   │   └── deploy.js                        # Deploy + auto-export ABI bundle to backend/frontend
 │   ├── deployment.json                      # Last deployment info
-│   ├── contract-address.json                # Address + chainId
+│   ├── contract-address.json                # Address (0x3ee8f0B4...) + chainId
 │   └── hardhat.config.js                    # viaIR + optimizer + Sepolia network
 │
 └── README.md
@@ -581,15 +617,17 @@ TrustStream/
 
 ## Smart Contract Overview
 
-`TrustStream.sol` is deployed on **Ethereum Sepolia Testnet** at `0x6a895b97872f83ddbDf53c5d773A2619a4B42db7` (verified on Sourcify).
+`TrustStream.sol` is deployed on **Ethereum Sepolia Testnet** at `0x3ee8f0B4b1DFa9D79068aEB1cC9D369Ab6DC53F9` (verified on Sourcify).
+
+> **Frontend endorsement:** `wallet.js` in the frontend connects to this contract via MetaMask and calls `endorseSegment` / `endorseImage` directly from the browser. The ABI bundle is auto-exported by `deploy.js` and stored at `frontend/src/services/TrustStream.abi.json` — no manual sync required after redeployment.
 
 ### 3-Org Consortium
 
 | Organization | Role | Action |
 |-------------|------|--------|
 | NewsAgency (Org1) | Submitter | Registers videos, segments, and images. Auto-endorses on registration. |
-| Broadcaster (Org2) | Endorser | Endorses registered media. |
-| Auditor (Org3) | Endorser | Final endorsement and verification. |
+| Broadcaster (Org2) | Endorser | Endorses registered media (via backend wallet or browser MetaMask). |
+| Auditor (Org3) | Endorser | Final endorsement and verification (via backend wallet or browser MetaMask). |
 
 ### Shared `MediaStatus` Enum
 
@@ -779,6 +817,106 @@ The fusion forensic engine was validated in a laboratory environment against thr
 
 ---
 
+## Revocation Timeline Visual
+
+The Revocation Timeline is a purpose-built visual audit interface that shows the **complete chronological lifecycle** of any media item — from the moment it was uploaded to its current on-chain status. It is the primary tool for demonstrating the immutability guarantee to thesis evaluators and end users.
+
+### What it shows
+
+Every event that has ever touched a piece of media is shown as a color-coded card on a vertical timeline, in strict chronological order:
+
+| Event type | Color | Events included |
+|-----------|-------|-----------------|
+| `local` | Gray | Upload accepted, segments prepared |
+| `c2pa` | Purple | Per-segment C2PA signed, video/image C2PA provenance signed |
+| `ipfs` | Teal | Per-segment IPFS upload, metadata JSON upload, image bytes + sidecar upload |
+| `register` | Blue | Video registered on-chain, segment registered on-chain, image registered on-chain |
+| `endorsement` | Green | Broadcaster / Auditor endorsements (per segment or per image) |
+| `tamper` | Amber | `reportTamper` or `reportImageTamper` calls |
+| `disputed` | Red | Contract auto-flip to Disputed status |
+| `revoked` | Red | Manual `revokeVideo` / `revokeImage` call |
+
+### API endpoint
+
+```
+GET /api/upload/blockchain/revocation-timeline?id=<mediaId>&kind=video|image
+```
+
+**How the backend builds the timeline:**
+
+1. Reads all on-chain TxLogs for the given `mediaId` and `kind` from Ethereum Sepolia
+2. Merges with the local catalog manifest — picks up C2PA sign events and IPFS upload events that aren't directly emitted as contract events
+3. Sorts all events chronologically (oldest first)
+4. Returns a unified response:
+
+```json
+{
+  "mediaId": "abc123",
+  "kind": "video",
+  "title": "Breaking News",
+  "status": "Active",
+  "totalEvents": 29,
+  "events": [
+    {
+      "type": "local",
+      "action": "UPLOAD_CREATED",
+      "label": "Video upload accepted",
+      "timestamp": "2026-05-26T14:58:39.000Z",
+      "org": "TrustStream",
+      "actor": "Local catalog",
+      "detail": "3 segment(s) prepared for provenance."
+    },
+    {
+      "type": "c2pa",
+      "action": "C2PA_SEGMENT_SIGNED",
+      "label": "Segment 0 C2PA signed",
+      "timestamp": "2026-05-26T14:58:39.000Z",
+      "segment": 0,
+      "manifestHash": "17767e91f132..."
+    },
+    {
+      "type": "register",
+      "action": "REGISTER_VIDEO",
+      "label": "Video registered on-chain",
+      "timestamp": "2026-05-26T14:58:48.000Z",
+      "org": "NewsAgency",
+      "txHash": "0x3570a95e...",
+      "blockNumber": 8421337
+    },
+    {
+      "type": "endorsement",
+      "action": "ENDORSE_SEGMENT",
+      "label": "Broadcaster endorsed segment 0",
+      "timestamp": "2026-05-26T14:59:12.000Z",
+      "org": "Broadcaster",
+      "segment": 0,
+      "txHash": "0x6f6b4bb3..."
+    }
+  ]
+}
+```
+
+### Frontend component
+
+`RevocationTimeline.jsx` is accessible at `/timeline/:kind/:id`. It:
+
+- Fetches the timeline from the API on mount
+- Shows a status badge at the top: **Active** (green) / **Disputed** (amber) / **Revoked** (red)
+- Renders each event as a card on a vertical left-ruled timeline with a colored dot matching the event type
+- TX hash fields link directly to `https://sepolia.etherscan.io/tx/<hash>`
+- IPFS CID fields link to `https://gateway.pinata.cloud/ipfs/<cid>`
+- Shows a total event count in the header
+- Shows an immutability proof footer: *"Media cannot be deleted; revoke only changes status while the original record remains auditable."*
+- Is fully theme-aware (dark + light) and links back to the detail page via a ← Back button
+
+### Where the link appears
+
+- On every Home feed card: **View Timeline** link alongside **View Details**
+- On `VideoDetail.jsx` and `Imagedetail.jsx`: a dedicated **Immutable Audit Trail** button
+- Directly navigable via URL: `/timeline/video/:videoId` or `/timeline/image/:imageId`
+
+---
+
 ## Blockchain Info
 
 | Item | Value |
@@ -786,12 +924,13 @@ The fusion forensic engine was validated in a laboratory environment against thr
 | Network | Ethereum Sepolia Testnet |
 | Chain ID | 11155111 |
 | RPC Provider | Alchemy |
-| Contract Address | `0x6a895b97872f83ddbDf53c5d773A2619a4B42db7` |
+| Contract Address | `0x3ee8f0B4b1DFa9D79068aEB1cC9D369Ab6DC53F9` |
 | Verified On | Sourcify (Etherscan verification ready, just needs API key) |
 | Etherscan | https://sepolia.etherscan.io |
 | Sourcify | https://repo.sourcify.dev/contracts/full_match/11155111/ |
 | TX Tracking | Receipt, block number, gas used per segment / per image |
 | Tamper System | Auto `reportTamper()` / `reportImageTamper()` + Disputed status |
+| Browser Endorsement | `wallet.js` calls `endorseSegment` / `endorseImage` via MetaMask using the auto-exported ABI |
 
 ---
 
@@ -809,50 +948,52 @@ The fusion forensic engine was validated in a laboratory environment against thr
 
 ---
 
-## Storage Summary
+### Storage Summary
 
 | Asset | Local | IPFS | Ethereum | Notes |
-|-------|-------|------|----------|-------|
-| Video original MP4 | ❌ Temp | ❌ | ❌ | Deleted after FFmpeg |
-| Video HLS segments | ✅ `public/streams/` | ✅ Pinned | (hash anchored) | Local for fast HLS playback |
-| Video `.c2pa` sidecars | ✅ Next to segments | (in metadata JSON) | (hash anchored) | Allows offline verification |
-| Video metadata JSON | — | ✅ Pinned | (cid anchored) | Sole source for sync recovery |
-| Video forensic report | — | ✅ Pinned | (cid in metadata) | — |
-| Video thumbnail | ✅ `public/thumbnails/` | — | — | Poster image, not part of provenance |
-| **Image bytes** | ❌ **Deleted after pin** | ✅ Pinned | (hash anchored) | **IPFS-only** |
-| **Image C2PA sidecar** | ❌ **Never written to disk** | ✅ Pinned | (hash anchored) | **IPFS-only** |
-| Image metadata JSON | — | ✅ Pinned | (cid anchored) | Includes sidecar CID + forensics |
-| Manifest catalog (cache) | ✅ `data/catalog/*` | — | — | Reproducible from chain via sync |
+| :--- | :--- | :--- | :--- | :--- |
+| **Video original MP4** | ❌ Temp | ❌ | ❌ | Deleted after FFmpeg |
+| **Video HLS segments** | ✅ `public/streams/` | ✅ Pinned | *(hash anchored)* | Local for fast HLS playback |
+| **Video .c2pa sidecars** | ✅ Next to segments | *(in metadata JSON)* | *(hash anchored)* | Allows offline verification |
+| **Video metadata JSON** | — | ✅ Pinned | *(cid anchored)* | Sole source for sync recovery |
+| **Video forensic report** | — | ✅ Pinned | *(cid in metadata)* | — |
+| **Video thumbnail** | ✅ `public/thumbnails/` | — | — | Poster image, not part of provenance |
+| **Image bytes** | ❌ Deleted after pin | ✅ Pinned | *(hash anchored)* | IPFS-only |
+| **Image C2PA sidecar** | ❌ Never written to disk | ✅ Pinned | *(hash anchored)* | IPFS-only |
+| **Image metadata JSON** | — | ✅ Pinned | *(cid anchored)* | Includes sidecar CID + forensics |
+| **Manifest catalog (cache)**| ✅ `data/catalog/*` | — | — | Reproducible from chain via sync |
 
-The local manifest catalog is just a cache — every byte of canonical content lives on IPFS, every authoritative status lives on Ethereum.
+> **Note:** The local manifest catalog is just a cache — every byte of canonical content lives on IPFS, every authoritative status lives on Ethereum.
 
 ---
 
 ## Immutability Guarantees
 
-The thesis core promise is "uploaded content cannot be deleted." This is enforced at **four layers**:
+The thesis core promise is **"uploaded content cannot be deleted."** This is enforced at four layers:
 
-1. **Smart contract** — there is NO `delete*` function anywhere. Only `revoke*` (status flip). The `VideoRecord` / `ImageRecord` stays in storage forever, just with `status = Revoked`. Status guards prevent revoked / disputed media from accepting further endorsements.
+* **Smart contract:** There is NO `delete*` function anywhere. Only `revoke*` (status flip). The `VideoRecord` / `ImageRecord` stays in storage forever, just with `status = Revoked`. Status guards prevent revoked / disputed media from accepting further endorsements.
+* **IPFS:** Content-addressed by definition. Even if Pinata unpins, the CID still resolves on any other IPFS node that has the content. Hashes anchored on Ethereum let any third party detect substitution.
+* **HTTP API:** There are NO `DELETE` routes. The only mutation endpoints are `report-tamper` (with per-layer guard rails) and on-chain status flips. The Admin UI exposes no delete affordance.
+* **Catalog service:** `removeManifest()` exists for internal sync hygiene only, NOT exposed via any route. The Revocation Timeline endpoint reads and displays the catalog merge — but never deletes from it.
 
-2. **IPFS** — content-addressed by definition. Even if Pinata unpins, the CID still resolves on any other IPFS node that has the content. Hashes anchored on Ethereum let any third party detect substitution.
-
-3. **HTTP API** — there are NO `DELETE` routes. The only mutation endpoints are `report-tamper` (with per-layer guard rails) and on-chain status flips. The Admin UI exposes no delete affordance.
-
-4. **Catalog service** — `removeManifest()` exists for internal sync hygiene only, NOT exposed via any route. A code comment explicitly warns against exposing it.
-
-For images specifically, the **IPFS-only flow** strengthens the guarantee further: even the local backend cannot be coerced into producing a deletion path, because there's no local file to delete after the pipeline completes.
+*The Revocation Timeline Visual reinforces all four layers by making the full immutable event log visible and navigable by any user, with direct links to on-chain TX receipts and IPFS-pinned content.*
 
 ---
 
 ## What's New
 
-- **Image flow added end-to-end** — parallel to video, sharing the same blockchain / IPFS / C2PA infrastructure.
-- **Facebook-style timeline** — single-column feed, mixed videos + images, fullscreen modal/lightbox, per-card status pills.
-- **Custom video thumbnails** — admins can upload a poster shown before HLS playback. New static route at `/thumbnails/`.
-- **Image flow is fully IPFS-only** — image bytes AND the C2PA sidecar live ONLY on IPFS. The local temp file is unconditionally deleted after the pipeline completes (no env flag, no fallback).
-- **Smart contract hardened** — status guards on all write paths, video-level tamper counter, both `Active → Revoked` and `Disputed → Revoked` allowed.
-- **Stack-too-deep fixes** — `getImage` / `getSegment` split into smaller getters; wide-struct mappings made `internal`. The contract now compiles cleanly with AND without `viaIR`, so Etherscan / Sourcify verification just works.
-- **ABI single source of truth** — `deploy.js` auto-exports the bundle to backend AND frontend. No manual ABI sync.
-- **Backend `/feed` endpoint** — unified video + image feed sorted newest-first.
-- **`/sync-from-blockchain` recovers BOTH** videos AND images from on-chain TxLogs and IPFS metadata.
-**52 tests passing** — covering organization setup, video registration, revocation, metadata CID update, segment registration with C2PA, endorsement, verification, tamper alerts, auto-disputed status, getFullyEndorsedCount, TxLogs, and getVideosByUploader.
+### v2 — Live News Streaming + Revocation Timeline (May 2026)
+* **Live news streaming:** Platform repositioned from digital news archive to active live news streaming with real-time per-segment hash verification during HLS playback.
+* **Revocation Timeline Visual:** New `GET /api/upload/blockchain/revocation-timeline?id=xxx&kind=video|image` endpoint; new `RevocationTimeline.jsx` page at `/timeline/:kind/:id`; linked from every feed card and detail page.
+* **Contract redeployed:** New canonical address `0x3ee8f0B4b1DFa9D79068aEB1cC9D369Ab6DC53F9` on Sepolia; ABI bundle auto-exported to both backend and frontend.
+* **Browser-side endorsement:** `wallet.js` calls `endorseSegment` / `endorseImage` directly via MetaMask using the ABI bundle; Broadcaster and Auditor can endorse without a backend wallet.
+* **Merge conflicts resolved:** README cleaned; HEAD branch is authoritative; `image-forensics.service.js` and `forensics.service.js` are confirmed present in the HEAD branch services directory.
+
+### v1 — Image Flow + Facebook Timeline (March 2026)
+* **Full image upload pipeline:** IPFS-only, zero local persistence.
+* **`image-forensics.service.js`:** AI-free image risk scoring (JPEG quant + EXIF).
+* **Facebook-style feed:** Single-column timeline with mixed video + image posts.
+* **`ImageDetail.jsx`:** Features 7-assertion C2PA display and forensic panel.
+* **Unified API:** `/feed` endpoint and `sync-from-blockchain` covering both media kinds.
+* **Smart contract extended:** Complete image entity added (`registerImage`, `endorseImage`, `reportImageTamper`, `revokeImage`, `verifyImage`).
+* **Admin page:** Tabbed Video / Image upload with an animated pipeline visualizer.

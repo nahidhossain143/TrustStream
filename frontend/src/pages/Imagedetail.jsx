@@ -1,25 +1,26 @@
 import { useEffect, useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { Link, useParams, useNavigate } from "react-router-dom";
 import { imageAPI } from "../services/api";
 import Navbar from "../components/Navbar";
 import { useTheme } from "../context/ThemeContext";
 
 const CONTRACT_ADDRESS = import.meta.env.VITE_CONTRACT_ADDRESS || "";
-const IPFS_GATEWAY     = "https://gateway.pinata.cloud/ipfs";
+const IPFS_GATEWAY = "https://gateway.pinata.cloud/ipfs";
 
 const buildGatewayUrl = (cid) => (cid ? `${IPFS_GATEWAY}/${cid}` : null);
 
-// ─── Section Header ───────────────────────────────────────
 function SectionHeader({ icon, title, color = "purple", isDark }) {
   const colors = {
-    purple:  { bg: "bg-purple-500/15",  border: "border-purple-500/25",  text: "text-purple-400" },
+    purple: { bg: "bg-purple-500/15", border: "border-purple-500/25", text: "text-purple-400" },
     emerald: { bg: "bg-emerald-500/15", border: "border-emerald-500/25", text: "text-emerald-400" },
-    violet:  { bg: "bg-violet-500/15",  border: "border-violet-500/25",  text: "text-violet-400" },
-    orange:  { bg: "bg-orange-500/15",  border: "border-orange-500/25",  text: "text-orange-400" },
-    pink:    { bg: "bg-pink-500/15",    border: "border-pink-500/25",    text: "text-pink-400" },
-    blue:    { bg: "bg-blue-500/15",    border: "border-blue-500/25",    text: "text-blue-400" },
+    violet: { bg: "bg-violet-500/15", border: "border-violet-500/25", text: "text-violet-400" },
+    orange: { bg: "bg-orange-500/15", border: "border-orange-500/25", text: "text-orange-400" },
+    pink: { bg: "bg-pink-500/15", border: "border-pink-500/25", text: "text-pink-400" },
+    blue: { bg: "bg-blue-500/15", border: "border-blue-500/25", text: "text-blue-400" },
   };
+
   const c = colors[color] || colors.purple;
+
   return (
     <div className="flex items-center gap-3 mb-4">
       <div className={`w-7 h-7 rounded-lg ${c.bg} border ${c.border} flex items-center justify-center text-base`}>
@@ -32,18 +33,22 @@ function SectionHeader({ icon, title, color = "purple", isDark }) {
   );
 }
 
-// ─── Info Row ─────────────────────────────────────────────
 function InfoRow({ label, value, mono, link, isDark }) {
   const textMuted = isDark ? "text-neutral-500" : "text-neutral-400";
-  const textVal   = isDark ? "text-neutral-300" : "text-neutral-700";
+  const textVal = isDark ? "text-neutral-300" : "text-neutral-700";
+
   return (
     <div className={`flex gap-3 items-start py-2.5 border-b last:border-0 ${isDark ? "border-white/5" : "border-neutral-100"}`}>
       <span className={`text-[10px] uppercase tracking-widest font-mono w-32 flex-shrink-0 pt-0.5 ${textMuted}`}>
         {label}
       </span>
       {link ? (
-        <a href={link} target="_blank" rel="noreferrer"
-          className="text-[11px] break-all underline font-mono text-blue-400 hover:text-blue-300">
+        <a
+          href={link}
+          target="_blank"
+          rel="noreferrer"
+          className="text-[11px] break-all underline font-mono text-blue-400 hover:text-blue-300"
+        >
           {value}
         </a>
       ) : (
@@ -55,7 +60,6 @@ function InfoRow({ label, value, mono, link, isDark }) {
   );
 }
 
-// ─── Status Badge ─────────────────────────────────────────
 function StatusBadge({ ok, label }) {
   return (
     <span className={`inline-flex items-center gap-1.5 text-[10px] font-semibold border rounded-full px-2.5 py-1 ${
@@ -68,22 +72,22 @@ function StatusBadge({ ok, label }) {
   );
 }
 
-// ─── Main ────────────────────────────────────────────────
 export default function ImageDetail() {
-  const { isDark }   = useTheme();
-  const { imageId }  = useParams();
-  const navigate     = useNavigate();
+  const { isDark } = useTheme();
+  const { imageId } = useParams();
+  const navigate = useNavigate();
 
-  const [image, setImage]               = useState(null);
-  const [c2paData, setC2paData]         = useState(null);
-  const [chainData, setChainData]       = useState(null);
+  const [image, setImage] = useState(null);
+  const [c2paData, setC2paData] = useState(null);
+  const [chainData, setChainData] = useState(null);
   const [endorsements, setEndorsements] = useState([]);
-  const [loading, setLoading]           = useState(true);
-  const [error, setError]               = useState(null);
-  const [imgError, setImgError]         = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [imgError, setImgError] = useState(false);
 
   useEffect(() => {
     if (!imageId) return;
+
     Promise.all([
       imageAPI.getOne(imageId),
       imageAPI.getC2pa(imageId).catch(() => ({ data: null })),
@@ -100,9 +104,9 @@ export default function ImageDetail() {
       .finally(() => setLoading(false));
   }, [imageId]);
 
-  const bg        = isDark ? "bg-[#080808]" : "bg-neutral-50";
-  const cardBg    = isDark ? "bg-neutral-900/40 border-white/8" : "bg-white border-neutral-200";
-  const text      = isDark ? "text-white" : "text-neutral-900";
+  const bg = isDark ? "bg-[#080808]" : "bg-neutral-50";
+  const cardBg = isDark ? "bg-neutral-900/40 border-white/8" : "bg-white border-neutral-200";
+  const text = isDark ? "text-white" : "text-neutral-900";
   const textMuted = isDark ? "text-neutral-500" : "text-neutral-400";
 
   if (loading) {
@@ -136,22 +140,27 @@ export default function ImageDetail() {
   }
 
   const imgSrc = image.ipfsCid ? buildGatewayUrl(image.ipfsCid) : null;
-  const statusLabel = image.status === 0 || image.status === "active"   ? "Active"
-                    : image.status === 1 || image.status === "revoked"  ? "Revoked"
-                    : image.status === 2 || image.status === "disputed" ? "Disputed"
-                    : image.blockchainStatus;
+  const statusLabel =
+    image.status === 0 || image.status === "active"
+      ? "Active"
+      : image.status === 1 || image.status === "revoked"
+      ? "Revoked"
+      : image.status === 2 || image.status === "disputed"
+      ? "Disputed"
+      : image.blockchainStatus;
 
-  // Verify hash handler
   const handleVerify = async () => {
     if (!image.sha256Hash) {
       alert("No stored hash to verify against");
       return;
     }
+
     try {
       const res = await imageAPI.verify({
         imageId,
         clientHash: image.sha256Hash,
       });
+
       alert(
         res.data.status === "verified"
           ? "✓ Hash verified — image content is authentic"
@@ -162,11 +171,11 @@ export default function ImageDetail() {
     }
   };
 
-  // Report tamper handler
   const handleReportTamper = async () => {
-    if (!window.confirm(
-      "Report this image as tampered? This will be recorded permanently on the blockchain (immutable)."
-    )) return;
+    if (!window.confirm("Report this image as tampered? This will be recorded permanently on the blockchain (immutable).")) {
+      return;
+    }
+
     try {
       await imageAPI.reportTamper(imageId);
       alert("Tamper report submitted. Will be confirmed on-chain shortly.");
@@ -180,8 +189,6 @@ export default function ImageDetail() {
       <Navbar />
 
       <div className="max-w-4xl mx-auto px-4 sm:px-6 py-8 space-y-6">
-
-        {/* ─── Back + Title ─────────────────────────── */}
         <div className="space-y-3">
           <button
             onClick={() => navigate("/")}
@@ -205,19 +212,34 @@ export default function ImageDetail() {
                 <p className={`text-sm mt-1 ${textMuted}`}>{image.description}</p>
               )}
             </div>
+
             <div className="flex gap-2 flex-wrap">
-              <StatusBadge ok={image.blockchainStatus === "ready"}  label="Blockchain" />
-              <StatusBadge ok={image.c2paSigned}                    label="C2PA" />
-              <StatusBadge ok={image.ipfsStatus === "uploaded"}     label="IPFS" />
-              <StatusBadge ok={(image.endorsementCount || 0) >= 2}  label="Endorsed" />
+              <StatusBadge ok={image.blockchainStatus === "ready"} label="Blockchain" />
+              <StatusBadge ok={image.c2paSigned} label="C2PA" />
+              <StatusBadge ok={image.ipfsStatus === "uploaded"} label="IPFS" />
+              <StatusBadge ok={(image.endorsementCount || 0) >= 2} label="Endorsed" />
+
+              <Link
+                to={`/timeline/image/${imageId}`}
+                className={`inline-flex items-center gap-1.5 text-[10px] font-semibold border rounded-full px-2.5 py-1 ${
+                  isDark
+                    ? "text-cyan-300 bg-cyan-950/20 border-cyan-800/40 hover:bg-cyan-900/30"
+                    : "text-cyan-700 bg-cyan-50 border-cyan-200 hover:bg-cyan-100"
+                }`}
+              >
+                View Audit Trail
+              </Link>
+
               {image.forensicLabel && (
-                <StatusBadge ok={image.forensicLabel === "Authentic"} label={`Forensic: ${image.forensicLabel}`} />
+                <StatusBadge
+                  ok={image.forensicLabel === "Authentic"}
+                  label={`Forensic: ${image.forensicLabel}`}
+                />
               )}
             </div>
           </div>
         </div>
 
-        {/* ─── Image Preview ────────────────────────── */}
         <div className={`rounded-2xl border overflow-hidden ${cardBg}`}>
           <div className="px-6 py-5">
             <SectionHeader icon="🖼️" title="Image Preview" color="purple" isDark={isDark} />
@@ -236,8 +258,7 @@ export default function ImageDetail() {
                   <span className="text-4xl">🖼️</span>
                   <p className={`text-sm ${textMuted}`}>Image could not be loaded</p>
                   {imgSrc && (
-                    <a href={imgSrc} target="_blank" rel="noreferrer"
-                      className="text-purple-400 text-sm hover:underline">
+                    <a href={imgSrc} target="_blank" rel="noreferrer" className="text-purple-400 text-sm hover:underline">
                       Open on IPFS ↗
                     </a>
                   )}
@@ -257,11 +278,9 @@ export default function ImageDetail() {
               )}
             </div>
 
-            {/* Open on IPFS link */}
             {imgSrc && !imgError && (
               <div className="mt-3 flex justify-end">
-                <a href={imgSrc} target="_blank" rel="noreferrer"
-                  className="text-[11px] text-purple-400 hover:text-purple-300 font-mono flex items-center gap-1">
+                <a href={imgSrc} target="_blank" rel="noreferrer" className="text-[11px] text-purple-400 hover:text-purple-300 font-mono flex items-center gap-1">
                   Open full resolution on IPFS ↗
                 </a>
               </div>
@@ -269,13 +288,11 @@ export default function ImageDetail() {
           </div>
         </div>
 
-        {/* ─── NEW: Forensic Analysis ──────────────── */}
         {image.forensics && (
           <div className={`rounded-2xl border overflow-hidden ${cardBg}`}>
             <div className="px-6 py-5">
               <SectionHeader icon="🔬" title="AI-Free Forensic Analysis" color="pink" isDark={isDark} />
 
-              {/* Risk score + verdict */}
               <div className={`rounded-xl p-4 border mb-4 ${
                 image.forensics.finalLabel === "Authentic"
                   ? isDark ? "bg-emerald-950/20 border-emerald-800/30" : "bg-emerald-50 border-emerald-200"
@@ -287,13 +304,16 @@ export default function ImageDetail() {
                   <div>
                     <p className={`text-[10px] uppercase tracking-widest font-mono ${textMuted}`}>Verdict</p>
                     <p className={`text-2xl font-bold mt-1 ${
-                      image.forensics.finalLabel === "Authentic" ? "text-emerald-500"
-                      : image.forensics.finalLabel === "Suspicious" ? "text-amber-500"
-                      : "text-red-500"
+                      image.forensics.finalLabel === "Authentic"
+                        ? "text-emerald-500"
+                        : image.forensics.finalLabel === "Suspicious"
+                        ? "text-amber-500"
+                        : "text-red-500"
                     }`}>
                       {image.forensics.finalLabel}
                     </p>
                   </div>
+
                   <div className="text-right">
                     <p className={`text-[10px] uppercase tracking-widest font-mono ${textMuted}`}>Risk Score</p>
                     <p className={`text-2xl font-bold mt-1 ${text}`}>
@@ -303,7 +323,6 @@ export default function ImageDetail() {
                 </div>
               </div>
 
-              {/* 2 modules: compression + metadata */}
               <div className="grid grid-cols-2 gap-3 mb-4">
                 {image.forensics.modules?.compression && (
                   <div className={`rounded-xl p-3 border ${isDark ? "bg-neutral-800/40 border-neutral-700" : "bg-neutral-50 border-neutral-200"}`}>
@@ -318,6 +337,7 @@ export default function ImageDetail() {
                     </p>
                   </div>
                 )}
+
                 {image.forensics.modules?.metadata && (
                   <div className={`rounded-xl p-3 border ${isDark ? "bg-neutral-800/40 border-neutral-700" : "bg-neutral-50 border-neutral-200"}`}>
                     <p className={`text-[10px] font-semibold ${textMuted}`}>▪ METADATA</p>
@@ -331,7 +351,6 @@ export default function ImageDetail() {
                 )}
               </div>
 
-              {/* Forensic notes */}
               {image.forensics.notes?.length > 0 && (
                 <div className={`rounded-lg p-3 border ${isDark ? "bg-neutral-900 border-neutral-800" : "bg-neutral-50 border-neutral-200"}`}>
                   <p className={`text-[10px] uppercase tracking-widest font-mono mb-2 ${textMuted}`}>Forensic Notes</p>
@@ -353,7 +372,6 @@ export default function ImageDetail() {
           </div>
         )}
 
-        {/* ─── NEW: Action Row ─────────────────────── */}
         <div className={`rounded-2xl border p-4 ${cardBg}`}>
           <div className="flex items-center gap-2 flex-wrap">
             {image.txHash && (
@@ -362,35 +380,35 @@ export default function ImageDetail() {
                 target="_blank"
                 rel="noreferrer"
                 className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-all ${
-                  isDark ? "bg-white/5 text-neutral-300 border-white/10 hover:bg-white/10"
-                         : "bg-neutral-100 text-neutral-700 border-neutral-200 hover:bg-neutral-200"
+                  isDark ? "bg-white/5 text-neutral-300 border-white/10 hover:bg-white/10" : "bg-neutral-100 text-neutral-700 border-neutral-200 hover:bg-neutral-200"
                 }`}
               >
                 ⛓ View on Etherscan ↗
               </a>
             )}
+
             {image.metadataCid && (
               <a
                 href={buildGatewayUrl(image.metadataCid)}
                 target="_blank"
                 rel="noreferrer"
                 className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-all ${
-                  isDark ? "bg-white/5 text-neutral-300 border-white/10 hover:bg-white/10"
-                         : "bg-neutral-100 text-neutral-700 border-neutral-200 hover:bg-neutral-200"
+                  isDark ? "bg-white/5 text-neutral-300 border-white/10 hover:bg-white/10" : "bg-neutral-100 text-neutral-700 border-neutral-200 hover:bg-neutral-200"
                 }`}
               >
                 📌 IPFS Metadata ↗
               </a>
             )}
+
             <button
               onClick={handleVerify}
               className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-all ${
-                isDark ? "bg-white/5 text-neutral-300 border-white/10 hover:bg-white/10"
-                       : "bg-neutral-100 text-neutral-700 border-neutral-200 hover:bg-neutral-200"
+                isDark ? "bg-white/5 text-neutral-300 border-white/10 hover:bg-white/10" : "bg-neutral-100 text-neutral-700 border-neutral-200 hover:bg-neutral-200"
               }`}
             >
               🛡 Verify Hash
             </button>
+
             <button
               onClick={handleReportTamper}
               className="ml-auto flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg text-red-500 hover:bg-red-500/10 border border-transparent hover:border-red-500/30 transition-all"
@@ -399,74 +417,75 @@ export default function ImageDetail() {
               ⚠ Report Tamper
             </button>
           </div>
+
           <p className={`text-[10px] font-mono mt-3 ${textMuted}`}>
             Note: tamper reports are permanent on-chain. 2 reports flip image status to "Disputed".
           </p>
         </div>
 
-        {/* ─── Metadata ─────────────────────────────── */}
         <div className={`rounded-2xl border overflow-hidden ${cardBg}`}>
           <div className="px-6 py-5">
             <SectionHeader icon="📄" title="Image Metadata" color="blue" isDark={isDark} />
-            <InfoRow label="Image ID"    value={image.imageId}                                   mono isDark={isDark} />
-            <InfoRow label="Title"       value={image.title}                                          isDark={isDark} />
-            <InfoRow label="Description" value={image.description}                                    isDark={isDark} />
-            <InfoRow label="MIME Type"   value={image.mimeType}                                       isDark={isDark} />
-            <InfoRow label="Filename"    value={image.filename}                              mono     isDark={isDark} />
-            <InfoRow label="Created At"  value={new Date(image.createdAt).toLocaleString()}           isDark={isDark} />
-            <InfoRow label="Uploader"    value={image.uploader || "NewsAgency"}                       isDark={isDark} />
-            <InfoRow label="Status"      value={statusLabel}                                          isDark={isDark} />
-            <InfoRow label="SHA-256"     value={image.sha256Hash}                            mono     isDark={isDark} />
+            <InfoRow label="Image ID" value={image.imageId} mono isDark={isDark} />
+            <InfoRow label="Title" value={image.title} isDark={isDark} />
+            <InfoRow label="Description" value={image.description} isDark={isDark} />
+            <InfoRow label="MIME Type" value={image.mimeType} isDark={isDark} />
+            <InfoRow label="Filename" value={image.filename} mono isDark={isDark} />
+            <InfoRow label="Created At" value={new Date(image.createdAt).toLocaleString()} isDark={isDark} />
+            <InfoRow label="Uploader" value={image.uploader || "NewsAgency"} isDark={isDark} />
+            <InfoRow label="Status" value={statusLabel} isDark={isDark} />
+            <InfoRow label="SHA-256" value={image.sha256Hash} mono isDark={isDark} />
           </div>
         </div>
 
-        {/* ─── Blockchain ───────────────────────────── */}
         <div className={`rounded-2xl border overflow-hidden ${cardBg}`}>
           <div className="px-6 py-5">
             <SectionHeader icon="⛓" title="Blockchain Info" color="emerald" isDark={isDark} />
-            <InfoRow label="Network"        value="Ethereum Sepolia Testnet"  isDark={isDark} />
-            <InfoRow label="Chain ID"       value="11155111"                  isDark={isDark} />
-            <InfoRow label="Contract"       value={CONTRACT_ADDRESS}     mono
-              link={`https://sepolia.etherscan.io/address/${CONTRACT_ADDRESS}`} isDark={isDark} />
-            <InfoRow label="Status"         value={image.blockchainStatus}    isDark={isDark} />
-            <InfoRow label="Register TX"    value={image.txHash}         mono
-              link={image.txHash ? `https://sepolia.etherscan.io/tx/${image.txHash}` : null}
-              isDark={isDark} />
-            <InfoRow label="Broadcaster TX" value={image.txHashBroadcaster} mono
-              link={image.txHashBroadcaster ? `https://sepolia.etherscan.io/tx/${image.txHashBroadcaster}` : null}
-              isDark={isDark} />
-            <InfoRow label="Auditor TX"     value={image.txHashAuditor}  mono
-              link={image.txHashAuditor ? `https://sepolia.etherscan.io/tx/${image.txHashAuditor}` : null}
-              isDark={isDark} />
-            <InfoRow label="Block"          value={image.blockNumber?.toString()}        mono isDark={isDark} />
-            <InfoRow label="Total Gas"      value={image.totalGasUsed ? `${image.totalGasUsed.toLocaleString()} units` : null} isDark={isDark} />
-            <InfoRow label="Endorsements"   value={`${image.endorsementCount || 0} / 3`}     isDark={isDark} />
-            <InfoRow label="Immutability"   value="Record permanent — delete not possible"     isDark={isDark} />
+            <InfoRow label="Network" value="Ethereum Sepolia Testnet" isDark={isDark} />
+            <InfoRow label="Chain ID" value="11155111" isDark={isDark} />
+            <InfoRow
+              label="Contract"
+              value={CONTRACT_ADDRESS}
+              mono
+              link={`https://sepolia.etherscan.io/address/${CONTRACT_ADDRESS}`}
+              isDark={isDark}
+            />
+            <InfoRow label="Status" value={image.blockchainStatus} isDark={isDark} />
+            <InfoRow label="Register TX" value={image.txHash} mono link={image.txHash ? `https://sepolia.etherscan.io/tx/${image.txHash}` : null} isDark={isDark} />
+            <InfoRow label="Broadcaster TX" value={image.txHashBroadcaster} mono link={image.txHashBroadcaster ? `https://sepolia.etherscan.io/tx/${image.txHashBroadcaster}` : null} isDark={isDark} />
+            <InfoRow label="Auditor TX" value={image.txHashAuditor} mono link={image.txHashAuditor ? `https://sepolia.etherscan.io/tx/${image.txHashAuditor}` : null} isDark={isDark} />
+            <InfoRow label="Block" value={image.blockNumber?.toString()} mono isDark={isDark} />
+            <InfoRow label="Total Gas" value={image.totalGasUsed ? `${image.totalGasUsed.toLocaleString()} units` : null} isDark={isDark} />
+            <InfoRow label="Endorsements" value={`${image.endorsementCount || 0} / 3`} isDark={isDark} />
+            <InfoRow label="Immutability" value="Record permanent — delete not possible" isDark={isDark} />
 
-            {/* On-chain data (if fetched) */}
             {chainData?.exists && (
               <>
-                <InfoRow label="Chain Hash"     value={chainData.sha256Hash}      mono isDark={isDark} />
-                <InfoRow label="Chain IPFS CID" value={chainData.ipfsCid}         mono isDark={isDark} />
+                <InfoRow label="Chain Hash" value={chainData.sha256Hash} mono isDark={isDark} />
+                <InfoRow label="Chain IPFS CID" value={chainData.ipfsCid} mono isDark={isDark} />
               </>
             )}
 
-            {/* 3-org endorsement grid */}
             <div className={`pt-3 mt-1 border-t ${isDark ? "border-white/5" : "border-neutral-100"}`}>
               <p className={`text-[10px] uppercase tracking-widest font-mono mb-3 ${textMuted}`}>
                 3-Org Consortium Endorsements
               </p>
+
               <div className="grid grid-cols-3 gap-2">
                 {[
-                  { name: "NewsAgency",  role: "Submitter", icon: "🏢", color: "text-emerald-400" },
-                  { name: "Broadcaster", role: "Endorser",  icon: "📡", color: "text-blue-400" },
-                  { name: "Auditor",     role: "Endorser",  icon: "🔍", color: "text-violet-400" },
+                  { name: "NewsAgency", role: "Submitter", icon: "🏢", color: "text-emerald-400" },
+                  { name: "Broadcaster", role: "Endorser", icon: "📡", color: "text-blue-400" },
+                  { name: "Auditor", role: "Endorser", icon: "🔍", color: "text-violet-400" },
                 ].map(({ name, role, icon, color }, i) => {
-                  const endorsed = endorsements[i] || (i < (image.endorsementCount || 0));
+                  const endorsed = endorsements[i] || i < (image.endorsementCount || 0);
+
                   return (
-                    <div key={name} className={`rounded-xl p-3 border text-center ${
-                      isDark ? "bg-neutral-800/40 border-neutral-700" : "bg-neutral-50 border-neutral-200"
-                    }`}>
+                    <div
+                      key={name}
+                      className={`rounded-xl p-3 border text-center ${
+                        isDark ? "bg-neutral-800/40 border-neutral-700" : "bg-neutral-50 border-neutral-200"
+                      }`}
+                    >
                       <div className="text-xl mb-1">{icon}</div>
                       <p className={`text-[11px] font-semibold ${color}`}>{name}</p>
                       <p className={`text-[9px] ${textMuted}`}>{role}</p>
@@ -481,66 +500,66 @@ export default function ImageDetail() {
           </div>
         </div>
 
-        {/* ─── IPFS ─────────────────────────────────── */}
         <div className={`rounded-2xl border overflow-hidden ${cardBg}`}>
           <div className="px-6 py-5">
             <SectionHeader icon="📌" title="IPFS Storage" color="orange" isDark={isDark} />
-            <InfoRow label="Provider"     value="Pinata"                                           isDark={isDark} />
-            <InfoRow label="Status"       value={image.ipfsStatus}                                 isDark={isDark} />
-            <InfoRow label="Image CID"    value={image.ipfsCid}                              mono
-              link={buildGatewayUrl(image.ipfsCid)} isDark={isDark} />
-            <InfoRow label="Metadata CID" value={image.metadataCid}                          mono
-              link={buildGatewayUrl(image.metadataCid)} isDark={isDark} />
-            <InfoRow label="Content"      value="Image file + metadata JSON"                       isDark={isDark} />
-            <InfoRow label="Public GW"    value={buildGatewayUrl(image.ipfsCid)}             mono
-              link={buildGatewayUrl(image.ipfsCid)} isDark={isDark} />
+            <InfoRow label="Provider" value="Pinata" isDark={isDark} />
+            <InfoRow label="Status" value={image.ipfsStatus} isDark={isDark} />
+            <InfoRow label="Image CID" value={image.ipfsCid} mono link={buildGatewayUrl(image.ipfsCid)} isDark={isDark} />
+            <InfoRow label="Metadata CID" value={image.metadataCid} mono link={buildGatewayUrl(image.metadataCid)} isDark={isDark} />
+            <InfoRow label="Content" value="Image file + metadata JSON" isDark={isDark} />
+            <InfoRow label="Public GW" value={buildGatewayUrl(image.ipfsCid)} mono link={buildGatewayUrl(image.ipfsCid)} isDark={isDark} />
           </div>
         </div>
 
-        {/* ─── C2PA ─────────────────────────────────── */}
         <div className={`rounded-2xl border overflow-hidden ${cardBg}`}>
           <div className="px-6 py-5">
             <SectionHeader icon="▪" title="C2PA Provenance" color="violet" isDark={isDark} />
-            <InfoRow label="Spec Version"  value="C2PA v2.2"                                       isDark={isDark} />
-            <InfoRow label="Status"        value={image.c2paStatus}                                isDark={isDark} />
-            <InfoRow label="Assertions"    value="7 per image (no chain_hash — single unit)"       isDark={isDark} />
-            <InfoRow label="Algorithm"     value="HMAC-SHA256"                                     isDark={isDark} />
-            <InfoRow label="Signer"        value="NewsAgency"                                      isDark={isDark} />
-            <InfoRow label="Format"        value="Sidecar .c2pa file alongside image"              isDark={isDark} />
-            <InfoRow label="Instance ID"   value={image.c2paInstanceId || c2paData?.c2paInstanceId} mono isDark={isDark} />
+            <InfoRow label="Spec Version" value="C2PA v2.2" isDark={isDark} />
+            <InfoRow label="Status" value={image.c2paStatus} isDark={isDark} />
+            <InfoRow label="Assertions" value="7 per image (no chain_hash — single unit)" isDark={isDark} />
+            <InfoRow label="Algorithm" value="HMAC-SHA256" isDark={isDark} />
+            <InfoRow label="Signer" value="NewsAgency" isDark={isDark} />
+            <InfoRow label="Format" value="Sidecar .c2pa file alongside image" isDark={isDark} />
+            <InfoRow label="Instance ID" value={image.c2paInstanceId || c2paData?.c2paInstanceId} mono isDark={isDark} />
             <InfoRow label="Manifest Hash" value={image.c2paManifestHash || c2paData?.c2paManifestHash} mono isDark={isDark} />
-            <InfoRow label="Signed At"     value={image.c2paSignedAt ? new Date(image.c2paSignedAt).toLocaleString() : null} isDark={isDark} />
+            <InfoRow label="Signed At" value={image.c2paSignedAt ? new Date(image.c2paSignedAt).toLocaleString() : null} isDark={isDark} />
 
-            {/* C2PA signature verification result */}
             {c2paData?.verification && (
               <div className={`mt-3 pt-3 border-t ${isDark ? "border-white/5" : "border-neutral-100"}`}>
-                <p className={`text-[10px] uppercase tracking-widest font-mono mb-2 ${textMuted}`}>Signature Verification</p>
+                <p className={`text-[10px] uppercase tracking-widest font-mono mb-2 ${textMuted}`}>
+                  Signature Verification
+                </p>
                 <div className={`rounded-lg px-3 py-2.5 border text-[11px] font-mono ${
                   c2paData.verification.valid
                     ? isDark ? "bg-emerald-950/20 border-emerald-800/30 text-emerald-400" : "bg-emerald-50 border-emerald-200 text-emerald-700"
                     : isDark ? "bg-red-950/20 border-red-800/30 text-red-400" : "bg-red-50 border-red-200 text-red-700"
                 }`}>
-                  {c2paData.verification.valid ? "✓ Signature valid — manifest not tampered" : `✗ ${c2paData.verification.error || "Signature invalid"}`}
+                  {c2paData.verification.valid
+                    ? "✓ Signature valid — manifest not tampered"
+                    : `✗ ${c2paData.verification.error || "Signature invalid"}`}
                 </div>
               </div>
             )}
 
-            {/* 7 Assertions grid */}
             <div className={`pt-3 mt-1 border-t ${isDark ? "border-white/5" : "border-neutral-100"}`}>
               <p className={`text-[10px] uppercase tracking-widest font-mono mb-3 ${textMuted}`}>7 Assertions</p>
               <div className="grid grid-cols-2 gap-2">
                 {[
-                  { label: "Hash Binding",    icon: "🔒", value: "c2pa.hash.data" },
-                  { label: "Actions",         icon: "⚡", value: "c2pa.actions" },
+                  { label: "Hash Binding", icon: "🔒", value: "c2pa.hash.data" },
+                  { label: "Actions", icon: "⚡", value: "c2pa.actions" },
                   { label: "Claim Generator", icon: "🏭", value: "c2pa.claim_generator" },
-                  { label: "Creative Work",   icon: "🖼️", value: "schema-org.ImageObject" },
-                  { label: "Ingredient",      icon: "🧬", value: "c2pa.ingredient" },
-                  { label: "Timestamp",       icon: "⏰", value: "c2pa.timestamp" },
-                  { label: "Consortium",      icon: "🏢", value: "truststream.consortium" },
+                  { label: "Creative Work", icon: "🖼️", value: "schema-org.ImageObject" },
+                  { label: "Ingredient", icon: "🧬", value: "c2pa.ingredient" },
+                  { label: "Timestamp", icon: "⏰", value: "c2pa.timestamp" },
+                  { label: "Consortium", icon: "🏢", value: "truststream.consortium" },
                 ].map(({ label, icon, value }) => (
-                  <div key={value} className={`flex items-center gap-2 rounded-lg px-3 py-2 border ${
-                    isDark ? "bg-neutral-800/40 border-neutral-700" : "bg-neutral-50 border-neutral-200"
-                  }`}>
+                  <div
+                    key={value}
+                    className={`flex items-center gap-2 rounded-lg px-3 py-2 border ${
+                      isDark ? "bg-neutral-800/40 border-neutral-700" : "bg-neutral-50 border-neutral-200"
+                    }`}
+                  >
                     <span className="text-[11px]">{icon}</span>
                     <div className="flex-1 min-w-0">
                       <p className={`text-[10px] font-semibold ${isDark ? "text-neutral-300" : "text-neutral-700"}`}>{label}</p>
@@ -549,7 +568,7 @@ export default function ImageDetail() {
                     <span className="text-[9px] text-emerald-500">✓</span>
                   </div>
                 ))}
-                {/* No chain_hash note */}
+
                 <div className={`flex items-center gap-2 rounded-lg px-3 py-2 border ${
                   isDark ? "bg-neutral-900/40 border-neutral-800" : "bg-neutral-100 border-neutral-200"
                 }`}>
@@ -565,7 +584,6 @@ export default function ImageDetail() {
           </div>
         </div>
 
-        {/* ─── Immutability Notice ──────────────────── */}
         <div className={`rounded-2xl border px-6 py-5 flex items-start gap-4 ${
           isDark ? "bg-amber-950/10 border-amber-800/25" : "bg-amber-50 border-amber-200"
         }`}>
@@ -582,7 +600,6 @@ export default function ImageDetail() {
           </div>
         </div>
 
-        {/* Footer */}
         <p className={`text-center text-[9px] font-mono ${textMuted}`}>
           TrustStream v1.0 · C2PA v2.2 · Ethereum Sepolia · IPFS via Pinata
         </p>

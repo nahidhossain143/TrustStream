@@ -1,9 +1,9 @@
 {
   "contractName": "TrustStream",
-  "address": "0xBff060E6c5053A2ede6c50A67ab0122403441B9F",
+  "address": "0x3ee8f0B4b1DFa9D79068aEB1cC9D369Ab6DC53F9",
   "chainId": 11155111,
   "network": "sepolia",
-  "deployedAt": "2026-05-25T19:31:38.328Z",
+  "deployedAt": "2026-05-24T17:30:01.208Z",
   "abi": [
     {
       "inputs": [

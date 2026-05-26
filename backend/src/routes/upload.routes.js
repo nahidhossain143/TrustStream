@@ -86,6 +86,7 @@ const {
 
 const { analyzeVideoForensics } = require("../services/forensics.service");
 const { analyzeImageForensics } = require("../services/image-forensics.service");
+const { buildRevocationTimeline } = require("../services/timeline.service");
 
 const router = express.Router();
 
@@ -1391,6 +1392,23 @@ router.get("/feed", async (req, res) => {
 // =================================================================
 //  BLOCKCHAIN HELPER ROUTES (video)
 // =================================================================
+
+router.get("/blockchain/revocation-timeline", async (req, res) => {
+  try {
+    const result = await buildRevocationTimeline({
+      kind: req.query.kind,
+      id: req.query.id,
+    });
+
+    if (result.error) {
+      return res.status(result.status || 500).json({ error: result.error });
+    }
+
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 router.get("/blockchain/video/:videoId", async (req, res) => {
   const manifest = readManifest(req.params.videoId);
