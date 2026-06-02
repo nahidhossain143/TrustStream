@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useParams, useNavigate } from "react-router-dom";
 import api from "../services/api";
 import Navbar from "../components/Navbar";
+import ForensicPanel from "../components/ForensicPanel";
 import { useTheme } from "../context/ThemeContext";
 
 const CONTRACT_ADDRESS = import.meta.env.VITE_CONTRACT_ADDRESS || "";
@@ -66,6 +67,23 @@ function StatusBadge({ ok, label }) {
         : "text-neutral-500 bg-neutral-900/40 border-neutral-800"
     }`}>
       {ok ? "✓" : "—"} {label}
+    </span>
+  );
+}
+
+function ForensicBadge({ forensics }) {
+  if (!forensics?.finalLabel) return null;
+
+  const tone =
+    forensics.finalLabel === "Authentic"
+      ? "text-emerald-400 bg-emerald-950/30 border-emerald-800/40"
+      : forensics.finalLabel === "Suspicious"
+      ? "text-amber-400 bg-amber-950/30 border-amber-800/40"
+      : "text-red-400 bg-red-950/30 border-red-800/40";
+
+  return (
+    <span className={`inline-flex items-center gap-1.5 text-[10px] font-semibold border rounded-full px-2.5 py-1 ${tone}`}>
+      ✓ Forensic: {forensics.finalLabel}
     </span>
   );
 }
@@ -160,6 +178,7 @@ export default function VideoDetail() {
               <StatusBadge ok={manifest.blockchainStatus === "ready"} label="Blockchain" />
               <StatusBadge ok={manifest.c2paStatus === "signed"} label="C2PA" />
               <StatusBadge ok={manifest.ipfsStatus === "uploaded"} label="IPFS" />
+              <ForensicBadge forensics={manifest.forensics} />
 
               <Link
                 to={`/timeline/video/${videoId}`}
@@ -253,6 +272,15 @@ export default function VideoDetail() {
             <InfoRow label="Content" value="Video segments (.ts) + metadata JSON" isDark={isDark} />
           </div>
         </div>
+
+        <ForensicPanel
+          forensicStatus={manifest.forensicStatus}
+          forensicError={manifest.forensicError}
+          forensicReportCid={manifest.forensicReportCid}
+          forensicReportUrl={manifest.forensicReportUrl}
+          forensics={manifest.forensics}
+          isDark={isDark}
+        />
 
         <div className={`rounded-2xl border overflow-hidden ${cardBg}`}>
           <div className="px-6 py-5">
