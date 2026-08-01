@@ -58,6 +58,11 @@ const {
 } = require("../services/blockchain.service");
 
 const {
+  registerVideoProof,
+  registerImageProof,
+} = require("../services/fabric.service");
+
+const {
   uploadSegmentToIPFS,
   uploadMetadataToIPFS,
   uploadJsonToIPFS,
@@ -219,10 +224,14 @@ const buildVideoSummary = (manifest) => ({
   registeredAt: manifest.createdAt,
   metadataCid: manifest.metadataCid,
   metadataUrl: manifest.metadataCid ? buildGatewayUrl(manifest.metadataCid) : null,
+  merkleRoot: manifest.merkleRoot || null,
   thumbnailUrl: manifest.thumbnailUrl || null,
   status: manifest.status,
   ipfsStatus: manifest.ipfsStatus,
   blockchainStatus: manifest.blockchainStatus,
+  fabricStatus: manifest.fabricStatus || "pending",
+  fabricResult: manifest.fabricResult || null,
+  fabricError: manifest.fabricError || null,
   c2paStatus: manifest.c2paStatus || "pending",
   videoTxHash: manifest.videoTxHash || null,
   videoBlockNumber: manifest.videoBlockNumber || null,
@@ -298,6 +307,36 @@ const uploadWithRetry = async (localPath, filename, maxRetries = 3) => {
   return null;
 };
 
+const buildMerkleRootFromSegments = (segments = []) => {
+  let level = segments
+    .map((segment) => segment.chainHash || segment.sha256Hash)
+    .filter(Boolean)
+    .map((hash) => hash.replace(/^0x/, ""))
+    .map((hash) => Buffer.from(hash, "hex"));
+
+  if (!level.length) return "";
+
+  while (level.length > 1) {
+    const next = [];
+    for (let i = 0; i < level.length; i += 2) {
+      const left = level[i];
+      const right = level[i + 1] || left;
+      next.push(crypto.createHash("sha256").update(Buffer.concat([left, right])).digest());
+    }
+    level = next;
+  }
+
+  return `0x${level[0].toString("hex")}`;
+};
+
+const withTimeout = (promise, ms, label) =>
+  Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms)
+    ),
+  ]);
+
 const IPFS_BATCH_SIZE = 2;
 
 // =================================================================
@@ -334,6 +373,10 @@ const buildImageSummary = (manifest) => ({
   endorsementCount: manifest.endorsementCount || 0,
   fullyEndorsed: manifest.fullyEndorsed || false,
   blockchainStatus: manifest.blockchainStatus,
+  fabricStatus: manifest.fabricStatus || "pending",
+  fabricResult: manifest.fabricResult || null,
+  fabricError: manifest.fabricError || null,
+  fabricCompletedAt: manifest.fabricCompletedAt || null,
   ipfsStatus: manifest.ipfsStatus,
   status: manifest.status,
   txHash: manifest.txHash || null,
@@ -486,9 +529,49 @@ const syncVideoToIpfsAndChain = async (videoId) => {
     updateManifest(videoId, (cur) => ({
       ...cur,
       blockchainStatus: "skipped",
+      fabricStatus: "skipped",
       backgroundError: "Metadata upload to IPFS failed",
     }));
     return;
+  }
+
+  try {
+    updateManifest(videoId, (cur) => ({
+      ...cur,
+      fabricStatus: "registering",
+      fabricError: null,
+    }));
+
+    manifest = readManifest(videoId);
+    if (!manifest) return;
+
+    const merkleRoot = manifest.merkleRoot || buildMerkleRootFromSegments(manifest.segments);
+
+    const fabricResult = await registerVideoProof({
+      videoId: manifest.videoId,
+      title: manifest.title,
+      metadataCid,
+      merkleRoot,
+      totalSegments: manifest.totalSegments,
+    });
+
+    console.log("[fabric] RegisterVideoProof success:", fabricResult);
+
+    updateManifest(videoId, (cur) => ({
+      ...cur,
+      merkleRoot,
+      fabricStatus: fabricResult?.skipped ? "skipped" : "ready",
+      fabricResult,
+      fabricError: null,
+    }));
+  } catch (fabricErr) {
+    console.error("[upload] Fabric RegisterVideoProof failed:", fabricErr.message);
+
+    updateManifest(videoId, (cur) => ({
+      ...cur,
+      fabricStatus: "degraded",
+      fabricError: fabricErr.message,
+    }));
   }
 
   updateManifest(videoId, (cur) => ({ ...cur, blockchainStatus: "registering" }));
@@ -690,7 +773,50 @@ const syncImageToIpfsAndChain = async (imageId, opts = {}) => {
   const metadataUrl = buildGatewayUrl(metadataCid);
   updateImageManifest(imageId, (cur) => ({ ...cur, metadataCid, metadataUrl }));
 
-  // Step 5: Register on blockchain + 2 endorsements (3-org consortium).
+  // Step 5: Register image proof on Hyperledger Fabric.
+  try {
+    updateImageManifest(imageId, (cur) => ({
+      ...cur,
+      fabricStatus: "registering",
+      fabricError: null,
+    }));
+
+    manifest = readImageManifest(imageId);
+
+    const fabricResult = await withTimeout(
+      registerImageProof({
+        imageId,
+        title: manifest.title,
+        sha256Hash: manifest.sha256Hash,
+        ipfsCid,
+        metadataCid: metadataCid || "",
+        c2paHash: manifest.c2paManifestHash || "",
+      }),
+      20000,
+      "Fabric RegisterImageProof"
+    );
+
+    console.log("[fabric] RegisterImageProof success:", fabricResult);
+
+    updateImageManifest(imageId, (cur) => ({
+      ...cur,
+      fabricStatus: fabricResult?.skipped ? "skipped" : "ready",
+      fabricResult,
+      fabricError: null,
+      fabricCompletedAt: new Date().toISOString(),
+    }));
+  } catch (fabricErr) {
+    console.error("[upload-image] Fabric RegisterImageProof failed:", fabricErr.message);
+
+    updateImageManifest(imageId, (cur) => ({
+      ...cur,
+      fabricStatus: "degraded",
+      fabricError: fabricErr.message,
+      fabricCompletedAt: new Date().toISOString(),
+    }));
+  }
+
+  // Step 6: Register on blockchain + 2 endorsements (3-org consortium).
   console.log(`[upload-image] registering ${imageId} on blockchain...`);
   updateImageManifest(imageId, (cur) => ({ ...cur, blockchainStatus: "registering" }));
 
@@ -858,8 +984,14 @@ router.post("/", videoUpload, async (req, res) => {
       playlistUrl: `/streams/${videoId}/playlist.m3u8`,
       thumbnailUrl,
       metadataCid: null, metadataUrl: null,
+      merkleRoot: null,
       status: "ready", ipfsStatus: "pending",
-      blockchainStatus: "pending", c2paStatus: "pending",
+      blockchainStatus: "pending",
+      fabricStatus: "pending",
+      fabricResult: null,
+      fabricError: null,
+      fabricCompletedAt: null,
+      c2paStatus: "pending",
       backgroundError: null,
       videoTxHash: null, videoBlockNumber: null,
       videoTxEtherscan: null, totalGasUsed: null,
@@ -1145,6 +1277,9 @@ router.post("/image", imageUpload.single("image"), async (req, res) => {
       status: "ready",
       ipfsStatus: "pending",
       blockchainStatus: "pending",
+      fabricStatus: "pending",
+      fabricResult: null,
+      fabricError: null,
       c2paStatus: "pending",
       c2paSigned: false,
       c2paManifestHash: null,
