@@ -1,7 +1,7 @@
 # TrustStream 📡
 ### Decentralized Trust and Provenance for C2PA-Compliant Live News Streaming (Video + Image)
 
-> A research-based, tamper-resistant, **Facebook-style decentralized live news streaming platform** integrating **Ethereum Sepolia Testnet**, **C2PA v2.2 Provenance Manifests**, **IPFS via Pinata**, **SHA-256 Chain Hashing**, **HLS Streaming**, and **AI-free forensic analysis** to verify the authenticity of every video segment AND every news image in near real-time.
+> A research-based, tamper-resistant, **Facebook-style decentralized live news streaming platform** integrating **Ethereum Sepolia Testnet**, **Hyperledger Fabric**, **C2PA v2.2 Provenance Manifests**, **IPFS via Pinata**, **SHA-256 Chain Hashing**, **HLS Streaming**, and **AI-free forensic analysis** to verify the authenticity of every video segment AND every news image in near real-time.
 
 **Institution:** Ahsanullah University of Science and Technology (AUST)
 **Program:** B.Sc. in Computer Science and Engineering
@@ -24,6 +24,8 @@
 - [Tech Stack](#tech-stack)
 - [Prerequisites](#prerequisites)
 - [How to Run](#how-to-run)
+- [Hyperledger Fabric Run Guide](#hyperledger-fabric-run-guide)
+- [Hyperledger Fabric Implementation Details](#hyperledger-fabric-implementation-details)
 - [How to Use](#how-to-use)
 - [API Reference](#api-reference)
 - [Project Structure](#project-structure)
@@ -37,6 +39,7 @@
 - [IPFS Info](#ipfs-info)
 - [Storage Summary](#storage-summary)
 - [Immutability Guarantees](#immutability-guarantees)
+- [Git Push Notes](#git-push-notes)
 - [What's New](#whats-new)
 
 ---
@@ -62,6 +65,7 @@ The original `TrustStream.sol` has been extended with a complete image entity:
 All services upgraded to handle the image flow:
 
 - `blockchain.service.js` — provides image methods (`registerAndEndorseImage`, `getImageFromChain`, `endorseImageOnChain`, `reportImageTamperOnChain`, `revokeImageOnChain`, `getImageEndorsementsFromChain`, `getImageIdsFromChain`)
+- `fabric.service.js` — connects the backend to Hyperledger Fabric using Fabric Gateway and gRPC, then calls `RegisterVideoProof` and `RegisterImageProof` on the `truststreamcc` chaincode
 - `c2pa.service.js` — generates an image-variant manifest with **7 assertions** (no `chain_hash`, since images aren't segmented). Image manifests are signed in-memory and pinned to IPFS — no local sidecar file
 - `ipfs.service.js` — DRY refactor with `uploadImageToIPFS`, `uploadImageMetadataToIPFS`, and `uploadImageC2paToIPFS` for sidecar pinning
 - `catalog.service.js` — added a `kind: "video" | "image"` discriminator with backward-compat default for legacy manifests
@@ -112,9 +116,11 @@ All components are fully theme-aware (dark + light), `api.js` provides complete 
 ### Net Result
 
 - Contract deployed at `0x3ee8f0B4b1DFa9D79068aEB1cC9D369Ab6DC53F9` and ABI auto-exported to both backend and frontend
+- Hyperledger Fabric `truststreamcc` writes video and image proof records to `mychannel`
 - Backend services all image-aware with the new forensics module
 - Frontend transformed to a Facebook timeline aesthetic with proper detail pages for both kinds
 - **Revocation Timeline Visual** added — full media lifecycle viewable as an interactive vertical timeline
+- Frontend detail pages display Fabric proof status, ledger record, MSP identity, and Fabric consortium endorsements
 - **Immutability preserved at all four layers** (see [Immutability Guarantees](#immutability-guarantees) below)
 - Full end-to-end test passed: image upload → forensic → C2PA → IPFS → blockchain → on-chain registration → sync recovery
 - **Demo ready.**
@@ -174,6 +180,7 @@ Admin uploads MP4 + (optional) thumbnail image (Clerk authenticated)
        → Upload each segment to IPFS via Pinata (parallel batches)
        → Upload forensic report JSON to IPFS
        → Upload video metadata JSON (with C2PA + forensics) to IPFS
+       → RegisterVideoProof on Hyperledger Fabric (`truststreamcc`)
        → Register on blockchain - NewsAgency (Sepolia) - capture TX receipt + block
        → Endorse - Broadcaster (Sepolia) - capture TX receipt + gas
        → Endorse - Auditor (Sepolia) - capture TX receipt + gas
@@ -198,6 +205,7 @@ Admin uploads JPG / PNG / WebP (Clerk authenticated)
        → Pin image bytes to IPFS                   → ipfsCid
        → Pin C2PA sidecar JSON to IPFS             → c2paSidecarCid
        → Pin metadata JSON to IPFS (includes sidecar CID + forensics)
+       → RegisterImageProof on Hyperledger Fabric (`truststreamcc`)
        → registerImage on blockchain (NewsAgency auto-endorses)
        → endorseImage from Broadcaster + Auditor
        → UNCONDITIONALLY unlink the temp file
@@ -282,9 +290,10 @@ User clicks "View Timeline" on any media card
 | Provenance Standard | C2PA v2.2 (8 video assertions, 7 image assertions, HMAC-SHA256) |
 | Decentralized Storage | IPFS via Pinata (segments + image + C2PA sidecar + metadata JSON) |
 | Forensics | AI-free — JPEG quantization, EXIF, temporal coherence, AV sync |
-| Blockchain | Solidity ^0.8.0, Web3.js 4, Alchemy RPC |
-| Smart Contract | TrustStream.sol (video + image, shared MediaStatus) |
+| Blockchain | Solidity ^0.8.0, Web3.js 4, Alchemy RPC, Hyperledger Fabric Gateway |
+| Smart Contract | TrustStream.sol (video + image, shared MediaStatus), Fabric chaincode `truststreamcc` |
 | Testnet | Ethereum Sepolia (chainId 11155111) |
+| Permissioned Ledger | Hyperledger Fabric test-network (`mychannel`) |
 | Wallet | MetaMask (browser-side endorsement via `wallet.js`) |
 | Contract Deploy | Hardhat (single source of truth — auto-exports ABI bundle) |
 | TX Tracking | Receipt, block number, gas usage, Etherscan links |
@@ -300,16 +309,25 @@ User clicks "View Timeline" on any media card
 | FFmpeg | Latest (must be on PATH) | [ffmpeg.org/download.html](https://ffmpeg.org/download.html) |
 | Git | Latest | [git-scm.com](https://git-scm.com) |
 | MetaMask | Latest | [metamask.io](https://metamask.io) |
+| Docker Desktop | Latest | Required for Hyperledger Fabric containers |
+| WSL / Ubuntu | Ubuntu 24.04 recommended | Required for Fabric test-network commands on Windows |
+| Hyperledger Fabric Samples | Fabric test-network | Required for `peer`, `orderer`, and `truststreamcc` |
 
 > FFmpeg must be on system PATH for video segmentation.
 >
 > MetaMask must be connected to Sepolia Testnet for on-chain reads/writes from the browser.
+>
+> Docker Desktop and Ubuntu/WSL must be running before testing Hyperledger Fabric proof storage.
 
 ---
 
 ## How to Run
 
-The project requires **2 terminals** running simultaneously.
+The project requires Docker Desktop plus **3 active terminals**:
+
+1. Ubuntu/WSL terminal for Hyperledger Fabric and Docker containers
+2. PowerShell / VS Code terminal for the backend
+3. PowerShell / VS Code terminal for the frontend
 
 ### Step 1 — Clone
 
@@ -333,9 +351,38 @@ BROADCASTER_ADDRESS=0xyour_broadcaster_wallet_address
 AUDITOR_ADDRESS=0xyour_auditor_wallet_address
 PINATA_JWT=your_pinata_jwt
 IPFS_GATEWAY=https://gateway.pinata.cloud/ipfs
+
+FABRIC_ENABLED=true
+FABRIC_MSP_ID=Org1MSP
+FABRIC_CHANNEL_NAME=mychannel
+FABRIC_CHAINCODE_NAME=truststreamcc
+FABRIC_PEER_ENDPOINT=localhost:7051
+FABRIC_PEER_HOST_ALIAS=peer0.org1.example.com
 ```
 
 > **Note on `CONTRACT_ADDRESS`:** the backend reads the contract address from the auto-exported ABI bundle (`backend/src/config/TrustStream.abi.json`). You do NOT need to set `CONTRACT_ADDRESS` manually. If it is set and disagrees with the bundle, the bundle wins and a warning is logged.
+>
+> The Fabric certificate paths are OS-specific. Use the Windows/WSL paths on Windows and the Mac paths on macOS.
+
+Windows / WSL Fabric certificate paths:
+
+```env
+FABRIC_TLS_CERT_PATH=\\wsl.localhost\Ubuntu-24.04\home\YOUR_UBUNTU_USERNAME\fabric-project\fabric-samples\test-network\organizations\peerOrganizations\org1.example.com\peers\peer0.org1.example.com\tls\ca.crt
+FABRIC_CERT_PATH=\\wsl.localhost\Ubuntu-24.04\home\YOUR_UBUNTU_USERNAME\fabric-project\fabric-samples\test-network\organizations\peerOrganizations\org1.example.com\users\User1@org1.example.com\msp\signcerts\cert.pem
+FABRIC_KEY_DIR=\\wsl.localhost\Ubuntu-24.04\home\YOUR_UBUNTU_USERNAME\fabric-project\fabric-samples\test-network\organizations\peerOrganizations\org1.example.com\users\User1@org1.example.com\msp\keystore
+```
+
+Mac Fabric certificate paths:
+
+```env
+FABRIC_TLS_CERT_PATH=/Users/YOUR_MAC_USERNAME/fabric-project/fabric-samples/test-network/organizations/peerOrganizations/org1.example.com/peers/peer0.org1.example.com/tls/ca.crt
+FABRIC_CERT_PATH=/Users/YOUR_MAC_USERNAME/fabric-project/fabric-samples/test-network/organizations/peerOrganizations/org1.example.com/users/User1@org1.example.com/msp/signcerts/cert.pem
+FABRIC_KEY_DIR=/Users/YOUR_MAC_USERNAME/fabric-project/fabric-samples/test-network/organizations/peerOrganizations/org1.example.com/users/User1@org1.example.com/msp/keystore
+```
+
+> Replace `YOUR_UBUNTU_USERNAME` with the Ubuntu username returned by `whoami`.
+>
+> Replace `YOUR_MAC_USERNAME` with the macOS username returned by `whoami`. In our Mac setup, the path was `/Users/sumaiyaaftab/fabric-project/fabric-samples/test-network`.
 
 ### Step 3 — Configure Frontend
 
@@ -357,12 +404,77 @@ cd frontend && npm install && cd ..
 cd network  && npm install && cd ..
 ```
 
-### Step 5 — Run
+### Step 5 — Start Docker Desktop
+
+Open **Docker Desktop** on Windows and wait until it says Docker is running.
+
+Docker is required because Hyperledger Fabric runs its peers, orderer, certificate authorities, and chaincode as containers.
+
+### Step 6 — Start / Check Hyperledger Fabric Network
+
+Open PowerShell and enter Ubuntu/WSL:
+
+```powershell
+wsl -d Ubuntu-24.04
+```
+
+If the distro name is different, use:
+
+```powershell
+wsl
+```
+
+Go to the Fabric test-network folder:
+
+```bash
+cd ~/fabric-project/fabric-samples/test-network
+```
+
+Check running Fabric containers:
+
+```bash
+docker ps
+```
+
+Expected important containers:
+
+```text
+peer0.org1.example.com
+peer0.org2.example.com
+peer0.org3.example.com
+orderer.example.com
+dev-peer0.org1.example.com-truststreamcc...
+dev-peer0.org2.example.com-truststreamcc...
+```
+
+If `docker ps` is empty, start the Fabric network:
+
+```bash
+./network.sh up createChannel -ca
+```
+
+Deploy the TrustStream chaincode:
+
+```bash
+./network.sh deployCC -ccn truststreamcc -ccp ../chaincode/truststream/javascript -ccl javascript
+```
+
+If Org3 is required and not running, add Org3:
+
+```bash
+cd addOrg3
+./addOrg3.sh up -c mychannel -ca
+cd ..
+```
+
+If the terminal says `ledger already exists`, it usually means the channel was already joined earlier. In that case, check `docker ps` again and continue.
+
+### Step 7 — Run Backend
 
 #### Terminal 1 — Backend
 
-```bash
-cd TrustStream/backend
+```powershell
+cd D:\TrustStream\TrustStream\backend
 node src/server.js
 ```
 
@@ -378,10 +490,19 @@ Expected output:
 Server running on port 3001
 ```
 
+When uploading a video or image, Fabric success looks like:
+
+```text
+[fabric] RegisterVideoProof success
+[fabric] RegisterImageProof success
+```
+
+### Step 8 — Run Frontend
+
 #### Terminal 2 — Frontend
 
-```bash
-cd TrustStream/frontend
+```powershell
+cd D:\TrustStream\TrustStream\frontend
 npm run dev
 ```
 
@@ -398,11 +519,306 @@ VITE v7.x.x ready in xxx ms
 |---------|-----|--------|
 | Backend API | http://localhost:3001 | Terminal 1 |
 | Frontend | http://localhost:5173 (or 5174) | Terminal 2 |
+| Hyperledger Fabric | Docker containers in Ubuntu/WSL | `docker ps` |
 | Blockchain | Sepolia Testnet | Always live |
 | IPFS Storage | Pinata | Always live |
 | Local HLS cache (videos) | `backend/public/streams` | Local |
 | Local thumbnails | `backend/public/thumbnails` | Local |
 | Local manifest catalog | `backend/data/catalog` | Local |
+
+---
+
+## Hyperledger Fabric Run Guide
+
+### What Docker Runs
+
+Docker runs the Fabric network components:
+
+| Container | Purpose |
+|----------|---------|
+| `peer0.org1.example.com` | Org1 peer node; backend connects here |
+| `peer0.org2.example.com` | Org2 peer node |
+| `peer0.org3.example.com` | Org3 peer node, used when the 3-org network is enabled |
+| `orderer.example.com` | Orders transactions and creates blocks |
+| `dev-peer0.org1.example.com-truststreamcc...` | TrustStream chaincode container for Org1 |
+| `dev-peer0.org2.example.com-truststreamcc...` | TrustStream chaincode container for Org2 |
+
+Without Docker, the Fabric peer/orderer/chaincode will not run, and the backend cannot write Fabric proofs.
+
+### Daily Startup Checklist
+
+Every time the project is started on Windows:
+
+```text
+1. Open Docker Desktop
+2. Open PowerShell
+3. Run: wsl -d Ubuntu-24.04
+4. Run: cd ~/fabric-project/fabric-samples/test-network
+5. Run: docker ps
+6. Start backend: node src/server.js
+7. Start frontend: npm run dev
+```
+
+Every time the project is started on Mac:
+
+```text
+1. Open Docker Desktop
+2. Open Terminal
+3. Run: cd ~/fabric-project/fabric-samples/test-network
+4. Run: docker ps
+5. If needed, run: ./network.sh up createChannel -ca
+6. If Org3 is needed, run: cd addOrg3 && ./addOrg3.sh up -ca && cd ..
+7. Start backend: node src/server.js
+8. Start frontend: npm run dev
+```
+
+### Mac First-Time Fabric Setup
+
+On macOS, install Fabric samples, binaries, and Docker images:
+
+```bash
+mkdir -p ~/fabric-project
+cd ~/fabric-project
+curl -sSLO https://raw.githubusercontent.com/hyperledger/fabric/main/scripts/install-fabric.sh
+chmod +x install-fabric.sh
+./install-fabric.sh docker samples binary
+```
+
+Start the test network:
+
+```bash
+cd ~/fabric-project/fabric-samples/test-network
+./network.sh up createChannel -ca
+```
+
+Add Org3:
+
+```bash
+cd addOrg3
+./addOrg3.sh up -ca
+cd ..
+```
+
+Create the TrustStream chaincode folder if it is not already present:
+
+```bash
+mkdir -p ~/fabric-project/fabric-samples/chaincode/truststream/javascript
+```
+
+The chaincode folder must contain:
+
+```text
+index.js
+package.json
+```
+
+Deploy the chaincode:
+
+```bash
+cd ~/fabric-project/fabric-samples/test-network
+./network.sh deployCC -ccn truststreamcc -ccp ../chaincode/truststream/javascript -ccl javascript
+```
+
+### Verify Fabric CLI Environment
+
+In Ubuntu/WSL:
+
+```bash
+cd ~/fabric-project/fabric-samples/test-network
+export PATH=${PWD}/../bin:$PATH
+export FABRIC_CFG_PATH=$PWD/../config/
+source scripts/envVar.sh
+setGlobals 1
+```
+
+This configures the Fabric peer CLI to use Org1 identity.
+
+### Query Saved Video Proof
+
+```bash
+peer chaincode query -C mychannel -n truststreamcc -c '{"Args":["GetMediaProof","video","VIDEO_ID"]}'
+```
+
+### Query Saved Image Proof
+
+```bash
+peer chaincode query -C mychannel -n truststreamcc -c '{"Args":["GetMediaProof","image","IMAGE_ID"]}'
+```
+
+If JSON is returned, the media proof is saved in the Hyperledger Fabric ledger.
+
+### Expected Frontend Result
+
+Video and image detail pages show a Hyperledger Fabric card:
+
+```text
+✓ Fabric
+Status: ready
+Ledger Record: saved
+Created By: Org1MSP
+NewsAgency: Endorsed
+Broadcaster: Pending
+Auditor: Pending
+```
+
+Ethereum Sepolia can be `degraded` if the testnet wallet has insufficient gas. Fabric proof can still be successful because Fabric is a separate permissioned ledger.
+
+---
+
+## Hyperledger Fabric Implementation Details
+
+### Backend Packages Added
+
+```bash
+npm install @hyperledger/fabric-gateway @grpc/grpc-js
+```
+
+`@hyperledger/fabric-gateway` lets the Node.js backend submit transactions to Fabric.
+
+`@grpc/grpc-js` provides the gRPC client used to connect to Fabric peers.
+
+### Backend Files Changed
+
+| File | What changed |
+|------|--------------|
+| `backend/src/services/fabric.service.js` | New service that connects to Fabric peer, signs transactions with Org1 identity, and calls chaincode functions |
+| `backend/src/routes/upload.routes.js` | Video/image upload flow now calls Fabric after IPFS metadata is ready |
+| `backend/package.json` | Added Fabric SDK dependencies |
+| `backend/package-lock.json` | Locked installed Fabric SDK versions |
+| `backend/src/services/merkle.service.js` | Builds Merkle root / proof data used in video proof anchoring |
+| `backend/src/services/image-forensics.service.js` | Balanced AI-free image scoring so normal captured images are not incorrectly marked suspicious |
+| `backend/src/services/blockchain.service.js` | Kept Ethereum registration/endorsement flow compatible with Fabric-added upload pipeline |
+
+### Frontend Files Changed
+
+| File | What changed |
+|------|--------------|
+| `frontend/src/pages/VideoDetail.jsx` | Shows Hyperledger Fabric proof card for video uploads |
+| `frontend/src/pages/Imagedetail.jsx` | Shows Hyperledger Fabric proof card for image uploads |
+
+### Contract / ABI Files Updated
+
+| File | Purpose |
+|------|---------|
+| `network/contracts/TrustStream.sol` | Ethereum smart contract updates |
+| `network/contract-address.json` | Latest deployed Sepolia contract address |
+| `network/deployment.json` | Latest deployment metadata |
+| `backend/src/config/TrustStream.abi.json` | Backend ABI bundle |
+| `frontend/src/services/TrustStream.abi.json` | Frontend ABI bundle |
+| `backend/src/config/blockchain.js` | Loads ABI bundle as source of truth |
+
+### Fabric Service Flow
+
+`fabric.service.js` does this:
+
+```text
+Read TLS certificate
+  → Create gRPC connection to peer0.org1.example.com
+  → Read Org1 user certificate
+  → Read Org1 private key from keystore
+  → Sign transaction as Org1MSP
+  → Connect to channel mychannel
+  → Get chaincode truststreamcc
+  → Submit RegisterVideoProof / RegisterImageProof
+  → Return JSON result from Fabric ledger
+```
+
+### Fabric Chaincode Functions
+
+The TrustStream chaincode is deployed as:
+
+```text
+truststreamcc
+```
+
+Main functions:
+
+```text
+RegisterVideoProof(videoId, title, metadataCid, merkleRoot, totalSegments)
+RegisterImageProof(imageId, title, sha256Hash, ipfsCid, metadataCid, c2paHash)
+EndorseMedia(mediaType, mediaId)
+GetMediaProof(mediaType, mediaId)
+VerifyVideoProof(videoId, merkleRoot)
+VerifyImageProof(imageId, sha256Hash)
+```
+
+### What Gets Saved in Fabric
+
+For video, Fabric stores:
+
+```text
+mediaType
+mediaId
+title
+metadataCid
+merkleRoot
+totalSegments
+endorsements
+createdBy
+createdAt
+updatedAt
+```
+
+For image, Fabric stores:
+
+```text
+mediaType
+mediaId
+title
+sha256Hash
+ipfsCid
+metadataCid
+c2paHash
+endorsements
+createdBy
+createdAt
+updatedAt
+```
+
+### Confirmed Fabric Test Result
+
+A direct Fabric test was run on Mac:
+
+```bash
+peer chaincode invoke -o localhost:7050 --ordererTLSHostnameOverride orderer.example.com --tls --cafile ~/fabric-project/fabric-samples/test-network/organizations/ordererOrganizations/example.com/orderers/orderer.example.com/msp/tlscacerts/tlsca.example.com-cert.pem -C mychannel -n truststreamcc --peerAddresses localhost:7051 --tlsRootCertFiles ~/fabric-project/fabric-samples/test-network/organizations/peerOrganizations/org1.example.com/peers/peer0.org1.example.com/tls/ca.crt --peerAddresses localhost:9051 --tlsRootCertFiles ~/fabric-project/fabric-samples/test-network/organizations/peerOrganizations/org2.example.com/peers/peer0.org2.example.com/tls/ca.crt -c '{"Args":["RegisterVideoProof","mac-test-2","Mac Fabric Test","bafkrei-test","0xabc123","3"]}'
+```
+
+Then queried:
+
+```bash
+peer chaincode query -C mychannel -n truststreamcc -c '{"Args":["GetMediaProof","video","mac-test-2"]}'
+```
+
+Successful output returned JSON, proving the Fabric ledger saved the proof:
+
+```json
+{
+  "docType": "mediaProof",
+  "mediaType": "video",
+  "mediaId": "mac-test-2",
+  "title": "Mac Fabric Test",
+  "metadataCid": "bafkrei-test",
+  "merkleRoot": "0xabc123",
+  "totalSegments": 3,
+  "endorsements": {
+    "NewsAgency": true,
+    "Broadcaster": false,
+    "Auditor": false
+  },
+  "createdBy": "Org1MSP"
+}
+```
+
+### Common Fabric Errors
+
+| Error | Meaning | Fix |
+|------|---------|-----|
+| `Cannot find module '../services/fabric.service'` | Fabric service file missing | Create `backend/src/services/fabric.service.js` |
+| `Cannot find module '@grpc/grpc-js'` | Fabric SDK dependency missing | Run `npm install @hyperledger/fabric-gateway @grpc/grpc-js` in backend |
+| `ENOENT ... wsl.localhost ... ca.crt` on Mac | Windows WSL path used on Mac | Replace `.env` Fabric paths with `/Users/...` Mac paths |
+| `Account blocked due to plan usage limit` | Pinata/IPFS account blocked | Use a new Pinata JWT or fix Pinata usage |
+| Frontend shows `Fabric Status: registering` | Page opened before backend finished, or manifest did not return Fabric result | Refresh page and confirm `fabricStatus`, `fabricResult`, `fabricError` are returned |
+| `Media proof does not exist` | Fabric ledger does not have that media ID | Query the correct ID or confirm transaction was endorsed/committed |
 
 ---
 
@@ -980,7 +1396,70 @@ The thesis core promise is **"uploaded content cannot be deleted."** This is enf
 
 ---
 
+## Git Push Notes
+
+Files that should be pushed for the Hyperledger Fabric integration:
+
+```text
+backend/package.json
+backend/package-lock.json
+backend/src/config/TrustStream.abi.json
+backend/src/config/blockchain.js
+backend/src/routes/upload.routes.js
+backend/src/services/blockchain.service.js
+backend/src/services/fabric.service.js
+backend/src/services/image-forensics.service.js
+backend/src/services/merkle.service.js
+frontend/src/pages/Imagedetail.jsx
+frontend/src/pages/VideoDetail.jsx
+frontend/src/services/TrustStream.abi.json
+network/contract-address.json
+network/contracts/TrustStream.sol
+network/deployment.json
+```
+
+Do not push:
+
+```text
+.env
+private keys
+Pinata JWT
+node_modules
+backend/test-fabric.js
+temporary uploaded files
+```
+
+Safe push flow:
+
+```bash
+git add .
+git restore --staged backend/test-fabric.js
+git status
+git commit -m "Add Hyperledger Fabric proof integration"
+git push origin feature/merkle-batching
+```
+
+If `.env` is staged accidentally:
+
+```bash
+git restore --staged backend/.env
+git restore --staged frontend/.env
+```
+
+---
+
 ## What's New
+
+### v3 — Hyperledger Fabric Proof Layer (August 2026)
+* **Hyperledger Fabric added:** TrustStream now writes video and image proof records to a permissioned Fabric ledger in addition to Ethereum Sepolia.
+* **Fabric chaincode:** New `truststreamcc` chaincode supports `RegisterVideoProof`, `RegisterImageProof`, `EndorseMedia`, `GetMediaProof`, `VerifyVideoProof`, and `VerifyImageProof`.
+* **Backend Fabric Gateway service:** New `fabric.service.js` uses Org1 certificate/private key to connect to `peer0.org1.example.com` and submit Fabric transactions.
+* **Video Fabric proof:** Upload flow now calls `RegisterVideoProof` with `videoId`, `title`, `metadataCid`, `merkleRoot`, and `totalSegments`.
+* **Image Fabric proof:** Image flow now supports `RegisterImageProof` with `imageId`, `title`, `sha256Hash`, `ipfsCid`, `metadataCid`, and `c2paHash`.
+* **Frontend proof card:** Video and image detail pages now show Fabric status, ledger record, MSP, peer, channel, chaincode, and Fabric consortium endorsements.
+* **Mac setup completed:** Docker Desktop + Fabric samples + 3-org test-network + `truststreamcc` deployment were verified on macOS Ventura / Apple Silicon.
+* **Ledger proof verified:** `GetMediaProof` query returned saved JSON for `mac-test-2`, proving Fabric ledger write/read works.
+* **Troubleshooting documented:** Added fixes for missing Fabric SDK, wrong WSL/Mac certificate paths, Pinata usage limit, and frontend `registering` state.
 
 ### v2 — Live News Streaming + Revocation Timeline (May 2026)
 * **Live news streaming:** Platform repositioned from digital news archive to active live news streaming with real-time per-segment hash verification during HLS playback.
