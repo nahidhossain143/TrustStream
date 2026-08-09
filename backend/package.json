@@ -11,6 +11,8 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@grpc/grpc-js": "^1.14.4",
+    "@hyperledger/fabric-gateway": "^1.12.0",
     "@pinata/sdk": "^2.1.0",
     "axios": "^1.13.6",
     "c2pa-node": "^0.5.26",

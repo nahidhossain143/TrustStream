@@ -7,6 +7,10 @@ import { useTheme } from "../context/ThemeContext";
 
 const CONTRACT_ADDRESS = import.meta.env.VITE_CONTRACT_ADDRESS || "";
 const IPFS_GATEWAY = "https://gateway.pinata.cloud/ipfs";
+const FABRIC_CHANNEL = import.meta.env.VITE_FABRIC_CHANNEL_NAME || "mychannel";
+const FABRIC_CHAINCODE = import.meta.env.VITE_FABRIC_CHAINCODE_NAME || "truststreamcc";
+const FABRIC_MSP_ID = import.meta.env.VITE_FABRIC_MSP_ID || "Org1MSP";
+const FABRIC_PEER = import.meta.env.VITE_FABRIC_PEER_HOST_ALIAS || "peer0.org1.example.com";
 
 function SectionHeader({ icon, title, color = "blue", isDark }) {
   const colors = {
@@ -88,6 +92,19 @@ function ForensicBadge({ forensics }) {
   );
 }
 
+function isFabricReady(manifest) {
+  if (manifest?.fabricStatus === "ready") return true;
+  if (manifest?.fabricResult && !manifest.fabricResult.skipped && !manifest.fabricError) return true;
+  return false;
+}
+
+function formatFabricStatus(manifest) {
+  if (manifest?.fabricError) return "degraded";
+  if (manifest?.fabricResult?.skipped) return "skipped";
+  if (isFabricReady(manifest)) return "ready";
+  return manifest?.fabricStatus || "pending";
+}
+
 export default function VideoDetail() {
   const { isDark } = useTheme();
   const { videoId } = useParams();
@@ -97,6 +114,39 @@ export default function VideoDetail() {
   const [segments, setSegments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [fabricCheck, setFabricCheck] = useState(null);
+  const [fabricCheckLoading, setFabricCheckLoading] = useState(false);
+  const [fabricCheckError, setFabricCheckError] = useState(null);
+
+  const [history, setHistory] = useState(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState(null);
+
+  const checkFabricAuthenticity = () => {
+    setFabricCheckLoading(true);
+    setFabricCheckError(null);
+    setFabricCheck(null);
+
+    api
+      .post(`/upload/${videoId}/verify-fabric`)
+      .then((res) => setFabricCheck(res.data))
+      .catch((err) => setFabricCheckError(err.response?.data?.error || "Check failed"))
+      .finally(() => setFabricCheckLoading(false));
+  };
+
+  const loadLedgerHistory = () => {
+    setHistoryLoading(true);
+    setHistoryError(null);
+
+    api
+      .get(`/upload/blockchain/fabric-history/video/${videoId}`)
+      .then((res) => {
+        if (res.data.available) setHistory(res.data.history);
+        else setHistoryError(res.data.reason || "History unavailable");
+      })
+      .catch((err) => setHistoryError(err.response?.data?.error || "Could not load history"))
+      .finally(() => setHistoryLoading(false));
+  };
 
   useEffect(() => {
     if (!videoId) return;
@@ -178,6 +228,7 @@ export default function VideoDetail() {
               <StatusBadge ok={manifest.blockchainStatus === "ready"} label="Blockchain" />
               <StatusBadge ok={manifest.c2paStatus === "signed"} label="C2PA" />
               <StatusBadge ok={manifest.ipfsStatus === "uploaded"} label="IPFS" />
+              <StatusBadge ok={isFabricReady(manifest)} label="Fabric" />
               <ForensicBadge forensics={manifest.forensics} />
 
               <Link
@@ -189,6 +240,17 @@ export default function VideoDetail() {
                 }`}
               >
                 View Audit Trail
+              </Link>
+
+              <Link
+                to="/fabric-audit"
+                className={`inline-flex items-center gap-1.5 text-[10px] font-semibold border rounded-full px-2.5 py-1 ${
+                  isDark
+                    ? "text-violet-300 bg-violet-950/20 border-violet-800/40 hover:bg-violet-900/30"
+                    : "text-violet-700 bg-violet-50 border-violet-200 hover:bg-violet-100"
+                }`}
+              >
+                Fabric Audit
               </Link>
             </div>
           </div>
@@ -251,6 +313,218 @@ export default function VideoDetail() {
                     <p className={`text-[9px] ${textMuted}`}>{role}</p>
                   </div>
                 ))}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className={`rounded-2xl border overflow-hidden ${cardBg}`}>
+          <div className="px-6 py-5">
+            <SectionHeader icon="🏛" title="Hyperledger Fabric Proof" color="violet" isDark={isDark} />
+            <InfoRow label="Status" value={formatFabricStatus(manifest)} isDark={isDark} />
+            <InfoRow label="Network" value="Fabric test-network" isDark={isDark} />
+            <InfoRow label="Channel" value={FABRIC_CHANNEL} mono isDark={isDark} />
+            <InfoRow label="Chaincode" value={FABRIC_CHAINCODE} mono isDark={isDark} />
+            <InfoRow label="Peer" value={FABRIC_PEER} mono isDark={isDark} />
+            <InfoRow label="MSP" value={FABRIC_MSP_ID} mono isDark={isDark} />
+            <InfoRow label="Ledger Record" value={isFabricReady(manifest) ? "saved" : null} isDark={isDark} />
+            <InfoRow label="Media Type" value={manifest.fabricResult?.mediaType || "video"} isDark={isDark} />
+            <InfoRow label="Media ID" value={manifest.fabricResult?.mediaId || manifest.videoId} mono isDark={isDark} />
+            <InfoRow label="Created By" value={manifest.fabricResult?.createdBy || null} mono isDark={isDark} />
+            <InfoRow
+              label="Created At"
+              value={manifest.fabricResult?.createdAt ? new Date(manifest.fabricResult.createdAt).toLocaleString() : null}
+              isDark={isDark}
+            />
+            <InfoRow
+              label="Updated At"
+              value={manifest.fabricResult?.updatedAt ? new Date(manifest.fabricResult.updatedAt).toLocaleString() : null}
+              isDark={isDark}
+            />
+            <InfoRow label="Error" value={manifest.fabricError || null} color="text-red-400" isDark={isDark} />
+
+            <div className={`pt-3 mt-1 border-t ${isDark ? "border-white/5" : "border-neutral-100"}`}>
+              <p className={`text-[10px] uppercase tracking-widest font-mono mb-3 ${textMuted}`}>
+                Fabric Consortium Endorsements
+              </p>
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { name: "NewsAgency", role: "Submitter", icon: "🏢", color: "text-emerald-400" },
+                  { name: "Broadcaster", role: "Endorser", icon: "📡", color: "text-blue-400" },
+                  { name: "Auditor", role: "Endorser", icon: "🔍", color: "text-violet-400" },
+                ].map(({ name, role, icon, color }) => {
+                  const endorsed = Boolean(manifest.fabricResult?.endorsements?.[name]);
+                  const endorsingPeer = manifest.fabricResult?.endorsingPeers?.[name];
+
+                  return (
+                    <div
+                      key={name}
+                      className={`rounded-xl p-3 border text-center ${
+                        endorsed
+                          ? isDark
+                            ? "bg-emerald-950/20 border-emerald-800/40"
+                            : "bg-emerald-50 border-emerald-200"
+                          : isDark
+                          ? "bg-neutral-800/40 border-neutral-700"
+                          : "bg-neutral-50 border-neutral-200"
+                      }`}
+                    >
+                      <div className="text-xl mb-1">{icon}</div>
+                      <p className={`text-[11px] font-semibold ${color}`}>{name}</p>
+                      <p className={`text-[9px] ${textMuted}`}>{role}</p>
+                      <p className={`text-[9px] mt-1 font-mono ${endorsed ? "text-emerald-400" : textMuted}`}>
+                        {endorsed ? "✓ Endorsed" : "— Pending"}
+                      </p>
+                      {endorsingPeer && (
+                        <p className={`text-[8px] mt-0.5 font-mono truncate ${textMuted}`} title={endorsingPeer}>
+                          via {endorsingPeer.split(".")[0]}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className={`pt-3 mt-3 border-t ${isDark ? "border-white/5" : "border-neutral-100"}`}>
+              <p className={`text-[10px] uppercase tracking-widest font-mono mb-3 ${textMuted}`}>
+                Check Authenticity
+              </p>
+
+              <button
+                onClick={checkFabricAuthenticity}
+                disabled={fabricCheckLoading}
+                className={`w-full rounded-xl py-2.5 text-xs font-semibold border transition-colors ${
+                  fabricCheckLoading
+                    ? "opacity-60 cursor-wait"
+                    : isDark
+                    ? "bg-violet-950/30 border-violet-800/40 text-violet-300 hover:bg-violet-950/50"
+                    : "bg-violet-50 border-violet-200 text-violet-700 hover:bg-violet-100"
+                }`}
+              >
+                {fabricCheckLoading
+                  ? "Re-hashing segments and checking ledger…"
+                  : "🔎 Check Authenticity"}
+              </button>
+
+              {fabricCheckError && (
+                <p className="text-[11px] text-red-400 mt-2 font-mono">{fabricCheckError}</p>
+              )}
+
+              {fabricCheck && (
+                <div
+                  className={`mt-3 rounded-xl p-4 border ${
+                    fabricCheck.authentic
+                      ? isDark
+                        ? "bg-emerald-950/20 border-emerald-800/40"
+                        : "bg-emerald-50 border-emerald-200"
+                      : isDark
+                      ? "bg-red-950/20 border-red-800/40"
+                      : "bg-red-50 border-red-200"
+                  }`}
+                >
+                  <p
+                    className={`text-sm font-bold ${
+                      fabricCheck.authentic ? "text-emerald-400" : "text-red-400"
+                    }`}
+                  >
+                    {fabricCheck.authentic
+                      ? "✓ Authentic — matches the ledger"
+                      : fabricCheck.fabric?.revoked
+                      ? "✗ Endorsement withdrawn by the consortium"
+                      : "✗ Does not match the ledger"}
+                  </p>
+                  <div className={`mt-2 space-y-1 text-[10px] font-mono ${textMuted}`}>
+                    <p>File on disk intact: {fabricCheck.fileIntact ? "yes" : "no — content changed"}</p>
+                    <p>
+                      Fabric record valid:{" "}
+                      {fabricCheck.fabric?.available
+                        ? fabricCheck.fabric.valid
+                          ? "yes"
+                          : fabricCheck.fabric.revoked
+                          ? "no — revoked (hash still matches)"
+                          : "no — hash mismatch"
+                        : `unavailable (${fabricCheck.fabric?.reason || "unknown"})`}
+                    </p>
+                    {fabricCheck.fabric?.revoked && fabricCheck.fabric?.proof?.revocationReason && (
+                      <p>Reason: {fabricCheck.fabric.proof.revocationReason}</p>
+                    )}
+                    <p className="break-all">Current hash: {fabricCheck.currentMerkleRoot}</p>
+                    <p className="break-all">Registered hash: {fabricCheck.registeredMerkleRoot}</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Ledger history — every version this record has held, read from
+                  Fabric's history index rather than current state. */}
+              <div className={`mt-5 pt-5 border-t ${isDark ? "border-white/8" : "border-neutral-200"}`}>
+                <p className={`text-[10px] uppercase tracking-widest font-mono mb-3 ${textMuted}`}>
+                  Ledger History
+                </p>
+
+                <button
+                  onClick={loadLedgerHistory}
+                  disabled={historyLoading}
+                  className={`w-full rounded-xl py-2.5 text-xs font-semibold border transition-colors ${
+                    historyLoading
+                      ? "opacity-60 cursor-wait"
+                      : isDark
+                      ? "bg-neutral-900/60 border-white/10 text-neutral-300 hover:bg-neutral-800"
+                      : "bg-neutral-50 border-neutral-200 text-neutral-700 hover:bg-neutral-100"
+                  }`}
+                >
+                  {historyLoading ? "Reading the ledger…" : "📜 Show ledger history"}
+                </button>
+
+                {historyError && (
+                  <p className="text-[11px] text-red-400 mt-2 font-mono">{historyError}</p>
+                )}
+
+                {history && (
+                  <div className="mt-3 space-y-2">
+                    {history.length === 0 && (
+                      <p className={`text-[11px] font-mono ${textMuted}`}>No ledger entries found.</p>
+                    )}
+                    {history.map((entry) => {
+                      const revoked = entry.value?.status === "revoked";
+                      return (
+                        <div
+                          key={entry.txId}
+                          className={`rounded-xl border px-3 py-2.5 ${
+                            revoked
+                              ? isDark
+                                ? "border-red-800/40 bg-red-950/15"
+                                : "border-red-200 bg-red-50"
+                              : isDark
+                              ? "border-white/8 bg-neutral-900/40"
+                              : "border-neutral-200 bg-white"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2 flex-wrap">
+                            <span
+                              className={`text-[10px] font-bold uppercase tracking-wider ${
+                                revoked ? "text-red-400" : "text-emerald-400"
+                              }`}
+                            >
+                              {revoked ? "Revoked" : "Registered"}
+                            </span>
+                            <span className={`text-[10px] font-mono ${textMuted}`}>
+                              {new Date(entry.timestamp).toLocaleString()}
+                            </span>
+                          </div>
+                          <p className={`text-[10px] font-mono mt-1.5 break-all ${textMuted}`}>
+                            tx {entry.txId}
+                          </p>
+                          {revoked && entry.value?.revocationReason && (
+                            <p className={`text-[10px] font-mono mt-1 ${isDark ? "text-red-400/80" : "text-red-700"}`}>
+                              {entry.value.revocationReason}
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -393,7 +667,7 @@ export default function VideoDetail() {
         </div>
 
         <p className={`text-center text-[9px] font-mono ${textMuted}`}>
-          TrustStream v1.0 · C2PA v2.2 · Ethereum Sepolia · IPFS via Pinata
+          TrustStream v1.0 · C2PA v2.2 · Ethereum Sepolia · Hyperledger Fabric · IPFS via Pinata
         </p>
       </div>
     </div>

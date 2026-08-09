@@ -6,78 +6,82 @@ contract TrustStream {
     // ─────────────────────────────────────────────
     //  Enums
     // ─────────────────────────────────────────────
-    enum OrgRole    { NewsAgency, Broadcaster, Auditor }
-    enum MediaStatus { Active, Revoked, Disputed }      // shared by video + image
+    enum OrgRole { NewsAgency, Broadcaster, Auditor }
+    enum MediaStatus { Active, Revoked, Disputed }
 
     // ─────────────────────────────────────────────
     //  Structs
     // ─────────────────────────────────────────────
     struct Organization {
-        string  name;
+        string name;
         OrgRole role;
-        bool    isActive;
+        bool isActive;
     }
 
-    // ── Video ──────────────────────────────────────
     struct VideoRecord {
-        string      videoId;
-        string      title;
-        string      metadataCid;
-        string      uploader;
-        address     uploaderAddr;
-        uint256     totalSegments;
-        uint256     registeredAt;
+        string videoId;
+        string title;
+        string metadataCid;
+        string uploader;
+        address uploaderAddr;
+        uint256 totalSegments;
+        uint256 registeredAt;
         MediaStatus status;
-        uint256     tamperReports;     // video-level total (sum across all segments)
-        bool        exists;
+        uint256 tamperReports;
+        bool exists;
     }
 
     struct VideoAsset {
-        string  videoId;
+        string videoId;
         uint256 segmentIndex;
-        string  sha256Hash;
-        string  chainHash;
-        string  ipfsCid;
-        string  c2paManifestHash;
-        string  c2paInstanceId;
+        string sha256Hash;
+        string chainHash;
+        string ipfsCid;
+        string c2paManifestHash;
+        string c2paInstanceId;
         uint256 timestamp;
         address submitter;
-        uint256 tamperReports;         // per-segment count
-        bool    exists;
+        uint256 tamperReports;
+        bool exists;
+    }
+
+    struct MerkleAnchor {
+        bytes32 merkleRoot;
+        address anchoredBy;
+        uint256 anchoredAt;
+        bool exists;
     }
 
     struct Endorsement {
         address endorser;
-        string  orgName;
+        string orgName;
         OrgRole role;
         uint256 timestamp;
     }
 
-    // ── Image ──────────────────────────────────────
     struct ImageRecord {
-        string      imageId;
-        string      title;
-        string      description;
-        string      sha256Hash;
-        string      ipfsCid;
-        string      metadataCid;
-        string      c2paManifestHash;
-        string      c2paInstanceId;
-        string      uploader;
-        address     uploaderAddr;
-        uint256     registeredAt;
+        string imageId;
+        string title;
+        string description;
+        string sha256Hash;
+        string ipfsCid;
+        string metadataCid;
+        string c2paManifestHash;
+        string c2paInstanceId;
+        string uploader;
+        address uploaderAddr;
+        uint256 registeredAt;
         MediaStatus status;
-        uint256     tamperReports;
-        bool        exists;
+        uint256 tamperReports;
+        bool exists;
     }
 
-    // ── TxLog ──────────────────────────────────────
     struct TxLog {
-        string  action;
-        string  mediaId;        // videoId or imageId
-        uint256 segmentIndex;   // 0 for images
+        string action;
+        string mediaId;
+        uint256 segmentIndex;
         address actor;
-        string  orgName;
+        string orgName;
         uint256 timestamp;
     }
 
@@ -85,128 +89,135 @@ contract TrustStream {
     //  State Variables
     // ─────────────────────────────────────────────
     mapping(address => Organization) public organizations;
-    address[]                        public orgAddresses;
+    address[] public orgAddresses;
 
-    // Video state
-    string[]                                                  public videoIds;
-    mapping(string => VideoRecord)                            internal videoRecords;
-    mapping(string => mapping(uint256 => VideoAsset))         internal assets;
-    mapping(string => mapping(uint256 => Endorsement[]))      public endorsements;
+    string[] public videoIds;
+    mapping(string => VideoRecord) internal videoRecords;
+    mapping(string => mapping(uint256 => VideoAsset)) internal assets;
+    mapping(string => mapping(uint256 => Endorsement[])) public endorsements;
     mapping(string => mapping(uint256 => mapping(address => bool))) public hasEndorsed;
     mapping(string => mapping(uint256 => mapping(address => bool))) public hasTamperReported;
+    mapping(string => MerkleAnchor) internal merkleAnchors;
 
-    // Image state
-    string[]                                           public imageIds;
-    mapping(string => ImageRecord)                     internal imageRecords;
-    mapping(string => Endorsement[])                   public imageEndorsements;
-    mapping(string => mapping(address => bool))        public hasEndorsedImage;
-    mapping(string => mapping(address => bool))        public hasImageTamperReported;
+    string[] public imageIds;
+    mapping(string => ImageRecord) internal imageRecords;
+    mapping(string => Endorsement[]) public imageEndorsements;
+    mapping(string => mapping(address => bool)) public hasEndorsedImage;
+    mapping(string => mapping(address => bool)) public hasImageTamperReported;
 
-    TxLog[]     public txLogs;
+    TxLog[] public txLogs;
 
-    uint256     public constant REQUIRED_ENDORSEMENTS = 2;
-    uint256     public constant TAMPER_THRESHOLD      = 2;
+    uint256 public constant REQUIRED_ENDORSEMENTS = 2;
+    uint256 public constant TAMPER_THRESHOLD = 2;
 
     // ─────────────────────────────────────────────
     //  Events — Video
     // ─────────────────────────────────────────────
     event VideoRegistered(
-        string  indexed videoId,
-        string          title,
-        string          metadataCid,
+        string indexed videoId,
+        string title,
+        string metadataCid,
         address indexed uploader,
-        uint256         totalSegments,
-        uint256         timestamp
+        uint256 totalSegments,
+        uint256 timestamp
     );
 
     event SegmentRegistered(
-        string  indexed videoId,
+        string indexed videoId,
         uint256 indexed segmentIndex,
-        string          sha256Hash,
-        string          chainHash,
-        string          ipfsCid,
+        string sha256Hash,
+        string chainHash,
+        string ipfsCid,
         address indexed submitter,
-        uint256         timestamp
+        uint256 timestamp
+    );
+
+    event MerkleRootAnchored(
+        string indexed videoId,
+        bytes32 indexed merkleRoot,
+        address indexed anchoredBy,
+        uint256 totalSegments,
+        uint256 timestamp
     );
 
     event SegmentEndorsed(
-        string  indexed videoId,
+        string indexed videoId,
         uint256 indexed segmentIndex,
         address indexed endorser,
-        string          orgName,
-        OrgRole         role,
-        uint256         timestamp
+        string orgName,
+        OrgRole role,
+        uint256 timestamp
     );
 
     event FullyEndorsed(
-        string  indexed videoId,
+        string indexed videoId,
         uint256 indexed segmentIndex,
-        uint256         endorsementCount,
-        uint256         timestamp
+        uint256 endorsementCount,
+        uint256 timestamp
     );
 
     event TamperReported(
-        string  indexed videoId,
+        string indexed videoId,
         uint256 indexed segmentIndex,
         address indexed reporter,
-        uint256         segmentReports,
-        uint256         videoReports,
-        uint256         timestamp
+        uint256 segmentReports,
+        uint256 videoReports,
+        uint256 timestamp
     );
 
     event VideoRevoked(
-        string  indexed videoId,
+        string indexed videoId,
         address indexed revokedBy,
-        uint256         timestamp
+        uint256 timestamp
     );
 
     event VideoDisputed(
-        string  indexed videoId,
-        uint256         timestamp
+        string indexed videoId,
+        uint256 timestamp
     );
 
     // ─────────────────────────────────────────────
     //  Events — Image
     // ─────────────────────────────────────────────
     event ImageRegistered(
-        string  indexed imageId,
-        string          title,
-        string          ipfsCid,
-        string          sha256Hash,
+        string indexed imageId,
+        string title,
+        string ipfsCid,
+        string sha256Hash,
         address indexed uploader,
-        uint256         timestamp
+        uint256 timestamp
     );
 
     event ImageEndorsed(
-        string  indexed imageId,
+        string indexed imageId,
         address indexed endorser,
-        string          orgName,
-        OrgRole         role,
-        uint256         timestamp
+        string orgName,
+        OrgRole role,
+        uint256 timestamp
     );
 
     event ImageFullyEndorsed(
-        string  indexed imageId,
-        uint256         endorsementCount,
-        uint256         timestamp
+        string indexed imageId,
+        uint256 endorsementCount,
+        uint256 timestamp
     );
 
     event ImageTamperReported(
-        string  indexed imageId,
+        string indexed imageId,
         address indexed reporter,
-        uint256         totalReports,
-        uint256         timestamp
+        uint256 totalReports,
+        uint256 timestamp
     );
 
     event ImageRevoked(
-        string  indexed imageId,
+        string indexed imageId,
         address indexed revokedBy,
-        uint256         timestamp
+        uint256 timestamp
     );
 
     event ImageDisputed(
-        string  indexed imageId,
-        uint256         timestamp
+        string indexed imageId,
+        uint256 timestamp
     );
 
     // ─────────────────────────────────────────────
@@ -234,13 +245,17 @@ contract TrustStream {
         address broadcasterAddr,
         address auditorAddr
     ) {
-        _registerOrg(newsAgencyAddr,  "NewsAgency",  OrgRole.NewsAgency);
+        _registerOrg(newsAgencyAddr, "NewsAgency", OrgRole.NewsAgency);
         _registerOrg(broadcasterAddr, "Broadcaster", OrgRole.Broadcaster);
-        _registerOrg(auditorAddr,     "Auditor",     OrgRole.Auditor);
+        _registerOrg(auditorAddr, "Auditor", OrgRole.Auditor);
     }
 
     function _registerOrg(address addr, string memory name, OrgRole role) internal {
-        organizations[addr] = Organization({ name: name, role: role, isActive: true });
+        organizations[addr] = Organization({
+            name: name,
+            role: role,
+            isActive: true
+        });
         orgAddresses.push(addr);
     }
 
@@ -251,21 +266,20 @@ contract TrustStream {
         string memory videoId,
         string memory title,
         string memory metadataCid,
-        uint256       totalSegments
+        uint256 totalSegments
     ) public onlyNewsAgency {
         require(!videoRecords[videoId].exists, "Video already registered");
 
         VideoRecord storage v = videoRecords[videoId];
-        v.videoId       = videoId;
-        v.title         = title;
-        v.metadataCid   = metadataCid;
-        v.uploader      = organizations[msg.sender].name;
-        v.uploaderAddr  = msg.sender;
+        v.videoId = videoId;
+        v.title = title;
+        v.metadataCid = metadataCid;
+        v.uploader = organizations[msg.sender].name;
+        v.uploaderAddr = msg.sender;
         v.totalSegments = totalSegments;
-        v.registeredAt  = block.timestamp;
-        v.status        = MediaStatus.Active;
-        v.exists        = true;
-        // tamperReports defaults to 0
+        v.registeredAt = block.timestamp;
+        v.status = MediaStatus.Active;
+        v.exists = true;
 
         videoIds.push(videoId);
 
@@ -275,29 +289,28 @@ contract TrustStream {
 
     function registerSegment(
         string memory videoId,
-        uint256       segmentIndex,
+        uint256 segmentIndex,
         string memory sha256Hash,
         string memory chainHash,
         string memory ipfsCid,
         string memory c2paManifestHash,
         string memory c2paInstanceId
     ) public onlyNewsAgency {
-        require(videoRecords[videoId].exists,                       "Video not registered");
+        require(videoRecords[videoId].exists, "Video not registered");
         require(videoRecords[videoId].status == MediaStatus.Active, "Video not active");
-        require(!assets[videoId][segmentIndex].exists,              "Segment already registered");
+        require(!assets[videoId][segmentIndex].exists, "Segment already registered");
 
         VideoAsset storage a = assets[videoId][segmentIndex];
-        a.videoId          = videoId;
-        a.segmentIndex     = segmentIndex;
-        a.sha256Hash       = sha256Hash;
-        a.chainHash        = chainHash;
-        a.ipfsCid          = ipfsCid;
+        a.videoId = videoId;
+        a.segmentIndex = segmentIndex;
+        a.sha256Hash = sha256Hash;
+        a.chainHash = chainHash;
+        a.ipfsCid = ipfsCid;
         a.c2paManifestHash = c2paManifestHash;
-        a.c2paInstanceId   = c2paInstanceId;
-        a.timestamp        = block.timestamp;
-        a.submitter        = msg.sender;
-        a.exists           = true;
-        // tamperReports defaults to 0
+        a.c2paInstanceId = c2paInstanceId;
+        a.timestamp = block.timestamp;
+        a.submitter = msg.sender;
+        a.exists = true;
 
         _addEndorsement(videoId, segmentIndex, msg.sender);
 
@@ -305,16 +318,45 @@ contract TrustStream {
         emit SegmentRegistered(videoId, segmentIndex, sha256Hash, chainHash, ipfsCid, msg.sender, block.timestamp);
     }
 
+    function anchorMerkleRoot(
+        string memory videoId,
+        bytes32 merkleRoot
+    ) public onlyNewsAgency {
+        require(videoRecords[videoId].exists, "Video not registered");
+        require(videoRecords[videoId].status == MediaStatus.Active, "Video not active");
+        require(merkleRoot != bytes32(0), "Invalid Merkle root");
+        require(!merkleAnchors[videoId].exists, "Merkle root already anchored");
+
+        merkleAnchors[videoId] = MerkleAnchor({
+            merkleRoot: merkleRoot,
+            anchoredBy: msg.sender,
+            anchoredAt: block.timestamp,
+            exists: true
+        });
+
+        _logTx("ANCHOR_MERKLE_ROOT", videoId, 0);
+
+        emit MerkleRootAnchored(
+            videoId,
+            merkleRoot,
+            msg.sender,
+            videoRecords[videoId].totalSegments,
+            block.timestamp
+        );
+    }
+
     function endorseSegment(string memory videoId, uint256 segmentIndex) public onlyEndorser {
-        require(assets[videoId][segmentIndex].exists,                "Segment not registered");
-        require(videoRecords[videoId].status == MediaStatus.Active,  "Video not active");
-        require(!hasEndorsed[videoId][segmentIndex][msg.sender],     "Already endorsed");
+        require(assets[videoId][segmentIndex].exists, "Segment not registered");
+        require(videoRecords[videoId].status == MediaStatus.Active, "Video not active");
+        require(!hasEndorsed[videoId][segmentIndex][msg.sender], "Already endorsed");
 
         _addEndorsement(videoId, segmentIndex, msg.sender);
 
         _logTx("ENDORSE_SEGMENT", videoId, segmentIndex);
         emit SegmentEndorsed(
-            videoId, segmentIndex, msg.sender,
+            videoId,
+            segmentIndex,
+            msg.sender,
             organizations[msg.sender].name,
             organizations[msg.sender].role,
             block.timestamp
@@ -326,19 +368,16 @@ contract TrustStream {
         }
     }
 
-    // Tamper report increments BOTH per-segment and video-level counters.
-    // Dispute triggers if either crosses TAMPER_THRESHOLD — prevents an
-    // attacker from spreading thin reports across many segments.
     function reportTamper(string memory videoId, uint256 segmentIndex) public onlyEndorser {
-        require(assets[videoId][segmentIndex].exists,                  "Segment not registered");
+        require(assets[videoId][segmentIndex].exists, "Segment not registered");
         require(!hasTamperReported[videoId][segmentIndex][msg.sender], "Already reported");
-        require(videoRecords[videoId].status == MediaStatus.Active,    "Video not active");
+        require(videoRecords[videoId].status == MediaStatus.Active, "Video not active");
 
         hasTamperReported[videoId][segmentIndex][msg.sender] = true;
         assets[videoId][segmentIndex].tamperReports += 1;
-        videoRecords[videoId].tamperReports         += 1;
+        videoRecords[videoId].tamperReports += 1;
 
-        uint256 segReports   = assets[videoId][segmentIndex].tamperReports;
+        uint256 segReports = assets[videoId][segmentIndex].tamperReports;
         uint256 videoReports = videoRecords[videoId].tamperReports;
 
         _logTx("REPORT_TAMPER", videoId, segmentIndex);
@@ -350,11 +389,9 @@ contract TrustStream {
         }
     }
 
-    // Uploader can revoke from Active OR Disputed (take down their own bad content).
-    // Status flip only — record stays on chain forever (immutability).
     function revokeVideo(string memory videoId) public onlyNewsAgency {
-        require(videoRecords[videoId].exists,                        "Video not registered");
-        require(videoRecords[videoId].uploaderAddr == msg.sender,    "Only uploader can revoke");
+        require(videoRecords[videoId].exists, "Video not registered");
+        require(videoRecords[videoId].uploaderAddr == msg.sender, "Only uploader can revoke");
         require(videoRecords[videoId].status != MediaStatus.Revoked, "Already revoked");
 
         videoRecords[videoId].status = MediaStatus.Revoked;
@@ -365,9 +402,9 @@ contract TrustStream {
 
     function _addEndorsement(string memory videoId, uint256 segmentIndex, address endorser) internal {
         endorsements[videoId][segmentIndex].push(Endorsement({
-            endorser:  endorser,
-            orgName:   organizations[endorser].name,
-            role:      organizations[endorser].role,
+            endorser: endorser,
+            orgName: organizations[endorser].name,
+            role: organizations[endorser].role,
             timestamp: block.timestamp
         }));
         hasEndorsed[videoId][segmentIndex][endorser] = true;
@@ -388,29 +425,23 @@ contract TrustStream {
     ) public onlyNewsAgency {
         require(!imageRecords[imageId].exists, "Image already registered");
 
-        // Direct storage assignment field-by-field avoids the struct-literal
-        // construction that pushes all fields onto the stack at once. With 8
-        // string params this would otherwise blow the EVM stack budget when
-        // compiled without viaIR (Etherscan / Sourcify default verifier path).
         ImageRecord storage img = imageRecords[imageId];
-        img.imageId          = imageId;
-        img.title            = title;
-        img.description      = description;
-        img.sha256Hash       = sha256Hash;
-        img.ipfsCid          = ipfsCid;
-        img.metadataCid      = metadataCid;
+        img.imageId = imageId;
+        img.title = title;
+        img.description = description;
+        img.sha256Hash = sha256Hash;
+        img.ipfsCid = ipfsCid;
+        img.metadataCid = metadataCid;
         img.c2paManifestHash = c2paManifestHash;
-        img.c2paInstanceId   = c2paInstanceId;
-        img.uploader         = organizations[msg.sender].name;
-        img.uploaderAddr     = msg.sender;
-        img.registeredAt     = block.timestamp;
-        img.status           = MediaStatus.Active;
-        img.exists           = true;
-        // tamperReports defaults to 0
+        img.c2paInstanceId = c2paInstanceId;
+        img.uploader = organizations[msg.sender].name;
+        img.uploaderAddr = msg.sender;
+        img.registeredAt = block.timestamp;
+        img.status = MediaStatus.Active;
+        img.exists = true;
 
         imageIds.push(imageId);
 
-        // NewsAgency auto-endorses on registration
         _addImageEndorsement(imageId, msg.sender);
 
         _logTx("REGISTER_IMAGE", imageId, 0);
@@ -418,9 +449,9 @@ contract TrustStream {
     }
 
     function endorseImage(string memory imageId) public onlyEndorser {
-        require(imageRecords[imageId].exists,                      "Image not registered");
+        require(imageRecords[imageId].exists, "Image not registered");
         require(imageRecords[imageId].status == MediaStatus.Active, "Image not active");
-        require(!hasEndorsedImage[imageId][msg.sender],            "Already endorsed");
+        require(!hasEndorsedImage[imageId][msg.sender], "Already endorsed");
 
         _addImageEndorsement(imageId, msg.sender);
 
@@ -440,9 +471,9 @@ contract TrustStream {
     }
 
     function reportImageTamper(string memory imageId) public onlyEndorser {
-        require(imageRecords[imageId].exists,                       "Image not registered");
+        require(imageRecords[imageId].exists, "Image not registered");
         require(imageRecords[imageId].status == MediaStatus.Active, "Image not active");
-        require(!hasImageTamperReported[imageId][msg.sender],       "Already reported");
+        require(!hasImageTamperReported[imageId][msg.sender], "Already reported");
 
         hasImageTamperReported[imageId][msg.sender] = true;
         imageRecords[imageId].tamperReports += 1;
@@ -458,11 +489,9 @@ contract TrustStream {
         }
     }
 
-    // Status flip only — record stays on blockchain forever (immutability).
-    // Uploader can revoke from Active OR Disputed.
     function revokeImage(string memory imageId) public onlyNewsAgency {
-        require(imageRecords[imageId].exists,                        "Image not registered");
-        require(imageRecords[imageId].uploaderAddr == msg.sender,    "Only uploader can revoke");
+        require(imageRecords[imageId].exists, "Image not registered");
+        require(imageRecords[imageId].uploaderAddr == msg.sender, "Only uploader can revoke");
         require(imageRecords[imageId].status != MediaStatus.Revoked, "Already revoked");
 
         imageRecords[imageId].status = MediaStatus.Revoked;
@@ -475,23 +504,23 @@ contract TrustStream {
         string memory imageId,
         string memory sha256Hash
     ) public view returns (
-        bool    hashMatch,
-        bool    fullyEndorsed,
+        bool hashMatch,
+        bool fullyEndorsed,
         uint256 endorsementCount,
-        uint8   status          // 0=Active, 1=Revoked, 2=Disputed
+        uint8 status
     ) {
         ImageRecord storage img = imageRecords[imageId];
-        hashMatch        = keccak256(bytes(img.sha256Hash)) == keccak256(bytes(sha256Hash));
+        hashMatch = keccak256(bytes(img.sha256Hash)) == keccak256(bytes(sha256Hash));
         endorsementCount = imageEndorsements[imageId].length;
-        fullyEndorsed    = endorsementCount >= REQUIRED_ENDORSEMENTS;
-        status           = uint8(img.status);
+        fullyEndorsed = endorsementCount >= REQUIRED_ENDORSEMENTS;
+        status = uint8(img.status);
     }
 
     function _addImageEndorsement(string memory imageId, address endorser) internal {
         imageEndorsements[imageId].push(Endorsement({
-            endorser:  endorser,
-            orgName:   organizations[endorser].name,
-            role:      organizations[endorser].role,
+            endorser: endorser,
+            orgName: organizations[endorser].name,
+            role: organizations[endorser].role,
             timestamp: block.timestamp
         }));
         hasEndorsedImage[imageId][endorser] = true;
@@ -500,99 +529,119 @@ contract TrustStream {
     // ═════════════════════════════════════════════
     //  VIEW FUNCTIONS — Video
     // ═════════════════════════════════════════════
+    function getMerkleRoot(
+        string memory videoId
+    ) public view returns (
+        bytes32 merkleRoot,
+        address anchoredBy,
+        uint256 anchoredAt,
+        bool exists
+    ) {
+        MerkleAnchor storage anchor = merkleAnchors[videoId];
+
+        merkleRoot = anchor.merkleRoot;
+        anchoredBy = anchor.anchoredBy;
+        anchoredAt = anchor.anchoredAt;
+        exists = anchor.exists;
+    }
+
     function verifySegment(
         string memory videoId,
-        uint256       segmentIndex,
+        uint256 segmentIndex,
         string memory sha256Hash
     ) public view returns (bool hashMatch, bool fullyEndorsed, uint256 endorsementCount) {
         VideoAsset storage asset = assets[videoId][segmentIndex];
-        hashMatch        = keccak256(bytes(asset.sha256Hash)) == keccak256(bytes(sha256Hash));
+        hashMatch = keccak256(bytes(asset.sha256Hash)) == keccak256(bytes(sha256Hash));
         endorsementCount = endorsements[videoId][segmentIndex].length;
-        fullyEndorsed    = endorsementCount >= REQUIRED_ENDORSEMENTS;
+        fullyEndorsed = endorsementCount >= REQUIRED_ENDORSEMENTS;
     }
 
     function getVideo(string memory videoId)
         public view
         returns (
-            string memory  title,
-            string memory  metadataCid,
-            string memory  uploader,
-            address        uploaderAddr,
-            uint256        totalSegments,
-            uint256        registeredAt,
-            uint8          status,
-            uint256        tamperReports,
-            bool           exists
+            string memory title,
+            string memory metadataCid,
+            string memory uploader,
+            address uploaderAddr,
+            uint256 totalSegments,
+            uint256 registeredAt,
+            uint8 status,
+            uint256 tamperReports,
+            bool exists
         )
     {
         VideoRecord storage v = videoRecords[videoId];
-        title         = v.title;
-        metadataCid   = v.metadataCid;
-        uploader      = v.uploader;
-        uploaderAddr  = v.uploaderAddr;
+        title = v.title;
+        metadataCid = v.metadataCid;
+        uploader = v.uploader;
+        uploaderAddr = v.uploaderAddr;
         totalSegments = v.totalSegments;
-        registeredAt  = v.registeredAt;
-        status        = uint8(v.status);
+        registeredAt = v.registeredAt;
+        status = uint8(v.status);
         tamperReports = v.tamperReports;
-        exists        = v.exists;
+        exists = v.exists;
     }
 
     function getSegment(
         string memory videoId,
-        uint256       segmentIndex
+        uint256 segmentIndex
     ) public view returns (
         string memory sha256Hash,
         string memory chainHash,
         string memory ipfsCid,
         string memory c2paManifestHash,
         string memory c2paInstanceId,
-        uint256       timestamp,
-        address       submitter,
-        bool          exists
+        uint256 timestamp,
+        address submitter,
+        bool exists
     ) {
         VideoAsset storage asset = assets[videoId][segmentIndex];
-        sha256Hash       = asset.sha256Hash;
-        chainHash        = asset.chainHash;
-        ipfsCid          = asset.ipfsCid;
+        sha256Hash = asset.sha256Hash;
+        chainHash = asset.chainHash;
+        ipfsCid = asset.ipfsCid;
         c2paManifestHash = asset.c2paManifestHash;
-        c2paInstanceId   = asset.c2paInstanceId;
-        timestamp        = asset.timestamp;
-        submitter        = asset.submitter;
-        exists           = asset.exists;
+        c2paInstanceId = asset.c2paInstanceId;
+        timestamp = asset.timestamp;
+        submitter = asset.submitter;
+        exists = asset.exists;
     }
 
     function getSegmentStatus(
         string memory videoId,
-        uint256       segmentIndex
+        uint256 segmentIndex
     ) public view returns (
         uint256 endorsementCount,
         uint256 tamperReports,
-        bool    fullyEndorsed
+        bool fullyEndorsed
     ) {
         VideoAsset storage asset = assets[videoId][segmentIndex];
         endorsementCount = endorsements[videoId][segmentIndex].length;
-        tamperReports    = asset.tamperReports;
-        fullyEndorsed    = endorsementCount >= REQUIRED_ENDORSEMENTS;
+        tamperReports = asset.tamperReports;
+        fullyEndorsed = endorsementCount >= REQUIRED_ENDORSEMENTS;
     }
 
     function getEndorsements(
         string memory videoId,
-        uint256       segmentIndex
+        uint256 segmentIndex
     ) public view returns (address[] memory, string[] memory, uint256[] memory) {
         Endorsement[] storage ends = endorsements[videoId][segmentIndex];
         uint256 n = ends.length;
         address[] memory addrs = new address[](n);
-        string[]  memory names = new string[](n);
+        string[] memory names = new string[](n);
         uint256[] memory times = new uint256[](n);
+
         for (uint256 i = 0; i < n; i++) {
             addrs[i] = ends[i].endorser;
             names[i] = ends[i].orgName;
             times[i] = ends[i].timestamp;
         }
+
         return (addrs, names, times);
     }
 
-    function getVideoIdCount() public view returns (uint256) { return videoIds.length; }
+    function getVideoIdCount() public view returns (uint256) {
+        return videoIds.length;
+    }
 
     function getVideoIdAt(uint256 index) public view returns (string memory) {
         require(index < videoIds.length, "Index out of bounds");
@@ -602,25 +651,22 @@ contract TrustStream {
     // ═════════════════════════════════════════════
     //  VIEW FUNCTIONS — Image
     // ═════════════════════════════════════════════
-    // Three small getters instead of one 10-return monolith — guarantees
-    // compilation in both viaIR and non-IR modes (important for Etherscan
-    // / Sourcify verification, which often runs without viaIR).
     function getImageCore(string memory imageId)
         public view
         returns (
             string memory title,
             string memory description,
             string memory uploader,
-            address       uploaderAddr,
-            bool          exists
+            address uploaderAddr,
+            bool exists
         )
     {
         ImageRecord storage img = imageRecords[imageId];
-        title        = img.title;
-        description  = img.description;
-        uploader     = img.uploader;
+        title = img.title;
+        description = img.description;
+        uploader = img.uploader;
         uploaderAddr = img.uploaderAddr;
-        exists       = img.exists;
+        exists = img.exists;
     }
 
     function getImageContent(string memory imageId)
@@ -634,16 +680,13 @@ contract TrustStream {
         )
     {
         ImageRecord storage img = imageRecords[imageId];
-        sha256Hash       = img.sha256Hash;
-        ipfsCid          = img.ipfsCid;
-        metadataCid      = img.metadataCid;
+        sha256Hash = img.sha256Hash;
+        ipfsCid = img.ipfsCid;
+        metadataCid = img.metadataCid;
         c2paManifestHash = img.c2paManifestHash;
-        c2paInstanceId   = img.c2paInstanceId;
+        c2paInstanceId = img.c2paInstanceId;
     }
 
-    // Backward-compatible composite — returns the most-needed fields in one
-    // call. Implemented as a thin wrapper that keeps each leg under the
-    // stack budget.
     function getImage(string memory imageId)
         public view
         returns (
@@ -653,19 +696,19 @@ contract TrustStream {
             string memory ipfsCid,
             string memory metadataCid,
             string memory c2paManifestHash,
-            address       uploaderAddr,
-            bool          exists
+            address uploaderAddr,
+            bool exists
         )
     {
         ImageRecord storage img = imageRecords[imageId];
-        title            = img.title;
-        description      = img.description;
-        sha256Hash       = img.sha256Hash;
-        ipfsCid          = img.ipfsCid;
-        metadataCid      = img.metadataCid;
+        title = img.title;
+        description = img.description;
+        sha256Hash = img.sha256Hash;
+        ipfsCid = img.ipfsCid;
+        metadataCid = img.metadataCid;
         c2paManifestHash = img.c2paManifestHash;
-        uploaderAddr     = img.uploaderAddr;
-        exists           = img.exists;
+        uploaderAddr = img.uploaderAddr;
+        exists = img.exists;
     }
 
     function getImageStatus(string memory imageId)
@@ -674,14 +717,14 @@ contract TrustStream {
             uint256 registeredAt,
             uint256 endorsementCount,
             uint256 tamperReports,
-            uint8   status
+            uint8 status
         )
     {
         ImageRecord storage img = imageRecords[imageId];
-        registeredAt     = img.registeredAt;
+        registeredAt = img.registeredAt;
         endorsementCount = imageEndorsements[imageId].length;
-        tamperReports    = img.tamperReports;
-        status           = uint8(img.status);
+        tamperReports = img.tamperReports;
+        status = uint8(img.status);
     }
 
     function getImageEndorsements(string memory imageId)
@@ -691,17 +734,21 @@ contract TrustStream {
         Endorsement[] storage ends = imageEndorsements[imageId];
         uint256 n = ends.length;
         address[] memory addrs = new address[](n);
-        string[]  memory names = new string[](n);
+        string[] memory names = new string[](n);
         uint256[] memory times = new uint256[](n);
+
         for (uint256 i = 0; i < n; i++) {
             addrs[i] = ends[i].endorser;
             names[i] = ends[i].orgName;
             times[i] = ends[i].timestamp;
         }
+
         return (addrs, names, times);
     }
 
-    function getImageIdCount() public view returns (uint256) { return imageIds.length; }
+    function getImageIdCount() public view returns (uint256) {
+        return imageIds.length;
+    }
 
     function getImageIdAt(uint256 index) public view returns (string memory) {
         require(index < imageIds.length, "Index out of bounds");
@@ -713,36 +760,40 @@ contract TrustStream {
     // ═════════════════════════════════════════════
     function _logTx(string memory action, string memory mediaId, uint256 segmentIndex) internal {
         txLogs.push(TxLog({
-            action:       action,
-            mediaId:      mediaId,
+            action: action,
+            mediaId: mediaId,
             segmentIndex: segmentIndex,
-            actor:        msg.sender,
-            orgName:      organizations[msg.sender].name,
-            timestamp:    block.timestamp
+            actor: msg.sender,
+            orgName: organizations[msg.sender].name,
+            timestamp: block.timestamp
         }));
     }
 
-    function getTxLogCount() public view returns (uint256) { return txLogs.length; }
+    function getTxLogCount() public view returns (uint256) {
+        return txLogs.length;
+    }
 
     function getTxLog(uint256 index)
         public view
         returns (
             string memory action,
             string memory mediaId,
-            uint256       segmentIndex,
-            address       actor,
+            uint256 segmentIndex,
+            address actor,
             string memory orgName,
-            uint256       timestamp
+            uint256 timestamp
         )
     {
         TxLog storage log = txLogs[index];
-        action       = log.action;
-        mediaId      = log.mediaId;
+        action = log.action;
+        mediaId = log.mediaId;
         segmentIndex = log.segmentIndex;
-        actor        = log.actor;
-        orgName      = log.orgName;
-        timestamp    = log.timestamp;
+        actor = log.actor;
+        orgName = log.orgName;
+        timestamp = log.timestamp;
     }
 
-    function getOrganizations() public view returns (address[] memory) { return orgAddresses; }
+    function getOrganizations() public view returns (address[] memory) {
+        return orgAddresses;
+    }
 }

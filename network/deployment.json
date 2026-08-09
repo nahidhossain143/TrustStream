@@ -1,8 +1,8 @@
 {
-  "address": "0x3ee8f0B4b1DFa9D79068aEB1cC9D369Ab6DC53F9",
-  "txHash": "0x62c43c173bc63335cb015bec49812140aebb04acdefb1d3ce03c6ac54f4eb60c",
-  "blockNumber": 10913355,
-  "gasUsed": "3263476",
+  "address": "0xc9c1F5a7a6461308A93a736Bc314DFAE1CaCD566",
+  "txHash": "0xcc1316bb9c13d2271d3571cf7f4b1da00e896e5c3e94e62738e01adba393b319",
+  "blockNumber": 11394767,
+  "gasUsed": "3432493",
   "deployer": "0x4b4b13F24F888FaaaDF4E301e48933C2f8243137",
   "organizations": {
     "newsAgency": {
@@ -17,7 +17,7 @@
   },
   "network": "sepolia",
   "chainId": 11155111,
-  "deployedAt": "2026-05-24T17:30:01.208Z",
+  "deployedAt": "2026-08-01T06:54:13.109Z",
   "constructorArgs": [
     "0x4b4b13F24F888FaaaDF4E301e48933C2f8243137",
     "0xe0C68F64e2E871D01A073D2cd25100f5A5d161d6",

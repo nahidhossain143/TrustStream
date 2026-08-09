@@ -154,6 +154,7 @@ function VideoUploadPanel({ isDark }) {
 
   const ipfsStatus    = bgStatus?.ipfsStatus;
   const chainStatus   = bgStatus?.blockchainStatus;
+  const fabricStatus  = bgStatus?.fabricStatus  || result?.fabricStatus;
   const c2paStatus    = bgStatus?.c2paStatus    || result?.c2paStatus;
   const forensicStatus = bgStatus?.forensicStatus || result?.forensicStatus;
   const forensicLabel  = bgStatus?.forensicLabel  || result?.forensicLabel;
@@ -187,6 +188,10 @@ function VideoUploadPanel({ isDark }) {
         if (stage !== "done") return "pending";
         if (!chainStatus || chainStatus === "pending" || chainStatus === "registering") return "active";
         return "done";
+      case "fabric":
+        if (stage !== "done") return "pending";
+        if (!fabricStatus || fabricStatus === "pending" || fabricStatus === "registering") return "active";
+        return "done";
       default: return "pending";
     }
   };
@@ -199,6 +204,7 @@ function VideoUploadPanel({ isDark }) {
     { key: "c2pa",       icon: "📋",  label: "C2PA manifest signing",         sublabel: "8 assertions • HMAC-SHA256" },
     { key: "ipfs",       icon: "📌",  label: "IPFS upload via Pinata",        sublabel: "segments + metadata JSON" },
     { key: "blockchain", icon: "⛓️", label: "Blockchain 3-org endorsement",  sublabel: "Sepolia • NewsAgency → Broadcaster → Auditor" },
+    { key: "fabric",     icon: "🧾", label: "Fabric 3-org endorsement",      sublabel: "mychannel • AND(Org1, Org2, Org3)" },
   ];
 
   const allDone = pipelineSteps.every((s) => getPipelineStatus(s.key) === "done");
@@ -425,6 +431,7 @@ function VideoUploadPanel({ isDark }) {
                 { label: "C2PA",       value: bgStatus?.c2paStatus    || result.c2paStatus    || "pending" },
                 { label: "IPFS",       value: bgStatus?.ipfsStatus    || result.ipfsStatus    || "pending" },
                 { label: "Blockchain", value: bgStatus?.blockchainStatus || result.blockchainStatus || "pending" },
+                { label: "Fabric",     value: bgStatus?.fabricStatus    || result.fabricStatus    || "pending" },
               ].map(({ label, value, mono }) => (
                 <ResultRow key={label} label={label} value={value} mono={mono} isDark={isDark} />
               ))}
@@ -548,6 +555,7 @@ function ImageUploadPanel({ isDark }) {
 
   const ipfsStatus  = bgStatus?.ipfsStatus    || result?.ipfsStatus;
   const chainStatus = bgStatus?.blockchainStatus || result?.blockchainStatus;
+  const fabricStatus = bgStatus?.fabricStatus || result?.fabricStatus;
   const c2paStatus  = bgStatus?.c2paStatus    || result?.c2paStatus;
 
   const getPipelineStatus = (step) => {
@@ -567,6 +575,9 @@ function ImageUploadPanel({ isDark }) {
       case "blockchain":
         if (!chainStatus || chainStatus === "pending" || chainStatus === "registering") return "active";
         return "done";
+      case "fabric":
+        if (!fabricStatus || fabricStatus === "pending" || fabricStatus === "registering") return "active";
+        return "done";
       default: return "pending";
     }
   };
@@ -578,6 +589,7 @@ function ImageUploadPanel({ isDark }) {
     { key: "c2pa",       icon: "📋",  label: "C2PA manifest signing",         sublabel: "7 assertions • HMAC-SHA256" },
     { key: "ipfs",       icon: "📌",  label: "IPFS upload via Pinata",        sublabel: "image file + metadata JSON" },
     { key: "blockchain", icon: "⛓️", label: "Blockchain 3-org endorsement",  sublabel: "Sepolia • NewsAgency → Broadcaster → Auditor" },
+    { key: "fabric",     icon: "🧾", label: "Fabric 3-org endorsement",      sublabel: "mychannel • AND(Org1, Org2, Org3)" },
   ];
 
   const allDone = pipelineSteps.every((s) => getPipelineStatus(s.key) === "done");
@@ -747,6 +759,7 @@ function ImageUploadPanel({ isDark }) {
                 { label: "IPFS",       value: bgStatus?.ipfsStatus    || result.ipfsStatus    || "pending" },
                 { label: "Blockchain", value: bgStatus?.blockchainStatus || result.blockchainStatus || "pending" },
                 { label: "Endorsed",   value: bgStatus?.endorsementCount != null ? `${bgStatus.endorsementCount}/3` : result.endorsementCount != null ? `${result.endorsementCount}/3` : "pending" },
+                { label: "Fabric",     value: bgStatus?.fabricStatus    || result.fabricStatus    || "pending" },
               ].map(({ label, value, mono }) => (
                 <ResultRow key={label} label={label} value={value} mono={mono} isDark={isDark} />
               ))}

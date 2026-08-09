@@ -1,22 +1,16 @@
 // -----------------------------------------------------------------
 //  backend/src/services/blockchain.service.js
-//
-//  All blockchain write/read operations for video + image flows.
-//  Uses a single shared web3/contract instance and the 3 org accounts
-//  loaded by ../config/blockchain.js.
 // -----------------------------------------------------------------
 
 const {
   web3,
   contract,
-  accounts,         // { newsAgency, broadcaster, auditor } - addresses (strings)
+  accounts,
   contractAddress,
   network,
   isReady,
   getExplorerUrl,
 } = require("../config/blockchain");
-
-// --- Utilities ---------------------------------------------------
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -44,18 +38,13 @@ const shortError = (err) => {
   return raw.replace(/\s+/g, " ").trim();
 };
 
-// Throws if the requested org account isn't configured.
 const requireAccount = (role) => {
   const addr = accounts[role];
   if (!addr) {
-    throw new Error(
-      `${role} account not configured. Set its private key in backend/.env.`
-    );
+    throw new Error(`${role} account not configured. Set its private key in backend/.env.`);
   }
   return addr;
 };
-
-// --- Gas price cache (30 sec TTL) -------------------------------
 
 let _gasPriceCache = null;
 let _gasPriceCachedAt = 0;
@@ -65,12 +54,10 @@ const getGasPrice = async () => {
   if (_gasPriceCache && now - _gasPriceCachedAt < 30000) return _gasPriceCache;
   const raw = await web3.eth.getGasPrice();
   const base = BigInt(raw.toString());
-  _gasPriceCache = ((base * 120n) / 100n).toString(); // +20% safety margin
+  _gasPriceCache = ((base * 120n) / 100n).toString();
   _gasPriceCachedAt = now;
   return _gasPriceCache;
 };
-
-// --- Nonce tracker per address ----------------------------------
 
 const _nonceMap = {};
 
@@ -82,8 +69,6 @@ const getNonce = async (address) => {
   return nonce;
 };
 
-// --- Receipt formatter (uniform shape) --------------------------
-
 const formatReceipt = (receipt) => ({
   txHash: receipt.transactionHash,
   blockNumber: Number(receipt.blockNumber),
@@ -94,8 +79,6 @@ const formatReceipt = (receipt) => ({
   to: receipt.to || null,
   etherscanUrl: getExplorerUrl(receipt.transactionHash, "tx"),
 });
-
-// --- Public utility endpoints -----------------------------------
 
 const getTxReceipt = async (txHash) => {
   if (!isReady() || !txHash) return null;
@@ -118,6 +101,7 @@ const getNetworkStatus = async () => {
       web3.eth.getGasPrice(),
     ]);
     const latestBlock = await web3.eth.getBlock(Number(blockNumber));
+
     return {
       online: true,
       network: network || "Sepolia Testnet",
@@ -143,9 +127,7 @@ const getWalletBalances = async () => {
       { org: "Auditor", role: "Endorser", address: accounts.auditor },
     ].filter((o) => o.address);
 
-    const balances = await Promise.all(
-      orgs.map((o) => web3.eth.getBalance(o.address))
-    );
+    const balances = await Promise.all(orgs.map((o) => web3.eth.getBalance(o.address)));
 
     return orgs.map((o, i) => ({
       ...o,
@@ -159,14 +141,11 @@ const getWalletBalances = async () => {
   }
 };
 
-// =================================================================
-//  VIDEO FUNCTIONS
-// =================================================================
-
 const registerVideoOnChain = async (videoId, title, metadataCid, totalSegments) => {
   if (!isReady()) {
     return { ok: false, skipped: true, error: "Blockchain not configured" };
   }
+
   try {
     const from = requireAccount("newsAgency");
     let txReceipt = null;
@@ -184,6 +163,7 @@ const registerVideoOnChain = async (videoId, title, metadataCid, totalSegments) 
     console.log(
       `[blockchain] Video "${title}" registered: block=${txReceipt.blockNumber} gas=${txReceipt.gasUsed} tx=${txReceipt.txHash?.slice(0, 16)}...`
     );
+
     return { ok: true, txReceipt };
   } catch (err) {
     console.error("[blockchain] registerVideo failed:", shortError(err));
@@ -191,9 +171,37 @@ const registerVideoOnChain = async (videoId, title, metadataCid, totalSegments) 
   }
 };
 
-// Register a segment AND have Broadcaster + Auditor endorse it.
-// Contract's registerSegment auto-endorses NewsAgency, so total = 3 endorsements.
-// REQUIRED_ENDORSEMENTS in contract = 2, so this always reaches FullyEndorsed.
+const anchorMerkleRootOnChain = async (videoId, merkleRoot) => {
+  if (!isReady()) {
+    return { ok: false, skipped: true, error: "Blockchain not configured" };
+  }
+
+  try {
+    const from = requireAccount("newsAgency");
+    let txReceipt = null;
+
+    await withRetry("anchorMerkleRoot", async () => {
+      const gasPrice = await getGasPrice();
+      const nonce = await getNonce(from);
+
+      const receipt = await contract.methods
+        .anchorMerkleRoot(videoId, merkleRoot)
+        .send({ from, gas: 500000, gasPrice, nonce });
+
+      txReceipt = formatReceipt(receipt);
+    });
+
+    console.log(
+      `[blockchain] Merkle root anchored for video ${videoId}: block=${txReceipt.blockNumber} gas=${txReceipt.gasUsed} tx=${txReceipt.txHash?.slice(0, 16)}...`
+    );
+
+    return { ok: true, txReceipt };
+  } catch (err) {
+    console.error("[blockchain] anchorMerkleRoot failed:", shortError(err));
+    return { ok: false, error: shortError(err) };
+  }
+};
+
 const registerAndEndorse = async (
   videoId,
   segmentIndex,
@@ -206,6 +214,7 @@ const registerAndEndorse = async (
   if (!isReady()) {
     return { ok: false, skipped: true, error: "Blockchain not configured" };
   }
+
   try {
     const newsAgency = requireAccount("newsAgency");
     const broadcaster = requireAccount("broadcaster");
@@ -214,7 +223,6 @@ const registerAndEndorse = async (
     const gasPrice = await getGasPrice();
     const txReceipts = {};
 
-    // Step 1: register (NewsAgency auto-endorses inside contract)
     await withRetry(`reg:${segmentIndex}`, async () => {
       const nonce = await getNonce(newsAgency);
       const receipt = await contract.methods
@@ -228,10 +236,10 @@ const registerAndEndorse = async (
           c2paInstanceId || ""
         )
         .send({ from: newsAgency, gas: 1500000, gasPrice, nonce });
+
       txReceipts.register = formatReceipt(receipt);
     });
 
-    // Step 2: Broadcaster + Auditor endorse in parallel
     await Promise.all([
       withRetry(`endorse-b:${segmentIndex}`, async () => {
         const nonce = await getNonce(broadcaster);
@@ -254,22 +262,18 @@ const registerAndEndorse = async (
       (txReceipts.broadcaster?.gasUsed || 0) +
       (txReceipts.auditor?.gasUsed || 0);
 
-    console.log(
-      `[blockchain] Segment ${segmentIndex} registered + endorsed (gas=${totalGasUsed})`
-    );
+    console.log(`[blockchain] Segment ${segmentIndex} registered + endorsed (gas=${totalGasUsed})`);
+
     return {
       ok: true,
-      endorsementCount: 3, // NewsAgency auto + Broadcaster + Auditor
-      fullyEndorsed: true, // contract REQUIRED_ENDORSEMENTS=2, we did 3
+      endorsementCount: 3,
+      fullyEndorsed: true,
       txReceipts,
       totalGasUsed,
       blockNumber: txReceipts.register?.blockNumber || null,
     };
   } catch (err) {
-    console.error(
-      `[blockchain] segment ${segmentIndex} failed:`,
-      shortError(err)
-    );
+    console.error(`[blockchain] segment ${segmentIndex} failed:`, shortError(err));
     return { ok: false, error: shortError(err) };
   }
 };
@@ -306,10 +310,7 @@ const registerAndEndorseBatch = async (videoId, segments) => {
         txReceipts: result.value?.txReceipts || null,
         totalGasUsed: result.value?.totalGasUsed || 0,
         blockNumber: result.value?.blockNumber || null,
-        error:
-          result.status === "rejected"
-            ? result.reason?.message
-            : result.value?.error,
+        error: result.status === "rejected" ? result.reason?.message : result.value?.error,
       });
     }
 
@@ -329,15 +330,14 @@ const verifyOnChain = async (videoId, segmentIndex, clientHash) => {
       error: "Blockchain not configured",
     };
   }
+
   try {
     const result = await withRetry(
       `verifySegment:${segmentIndex}`,
-      () =>
-        contract.methods
-          .verifySegment(videoId, Number(segmentIndex), clientHash)
-          .call(),
+      () => contract.methods.verifySegment(videoId, Number(segmentIndex), clientHash).call(),
       1
     );
+
     return {
       available: true,
       hashMatch: result.hashMatch,
@@ -361,10 +361,10 @@ const getEndorsementsFromChain = async (videoId, segmentIndex) => {
   try {
     const result = await withRetry(
       `getEndorsements:${segmentIndex}`,
-      () =>
-        contract.methods.getEndorsements(videoId, Number(segmentIndex)).call(),
+      () => contract.methods.getEndorsements(videoId, Number(segmentIndex)).call(),
       1
     );
+
     return result[0].map((addr, i) => ({
       address: addr,
       orgName: result[1][i],
@@ -378,12 +378,14 @@ const getEndorsementsFromChain = async (videoId, segmentIndex) => {
 
 const getVideoFromChain = async (videoId) => {
   if (!isReady()) return { exists: false };
+
   try {
     const result = await withRetry(
       `getVideo:${videoId}`,
       () => contract.methods.getVideo(videoId).call(),
       1
     );
+
     return {
       title: result.title,
       metadataCid: result.metadataCid,
@@ -391,7 +393,7 @@ const getVideoFromChain = async (videoId) => {
       uploaderAddr: result.uploaderAddr,
       totalSegments: Number(result.totalSegments),
       registeredAt: Number(result.registeredAt),
-      status: Number(result.status), // 0=Active 1=Revoked 2=Disputed
+      status: Number(result.status),
       tamperReports: Number(result.tamperReports || 0),
       exists: result.exists,
     };
@@ -401,15 +403,14 @@ const getVideoFromChain = async (videoId) => {
   }
 };
 
-// reportTamper(videoId, segmentIndex) - contract takes 2 params, no evidence.
-// Backend signs as NewsAgency (matches existing pattern). For an external
-// reporter, the frontend can sign via MetaMask using a different org wallet.
 const reportTamperOnChain = async (videoId, segmentIndex) => {
   if (!isReady()) return { ok: false, error: "Blockchain not configured" };
+
   try {
     const from = requireAccount("newsAgency");
     const gasPrice = await getGasPrice();
     const nonce = await getNonce(from);
+
     const receipt = await contract.methods
       .reportTamper(videoId, segmentIndex)
       .send({ from, gas: 400000, gasPrice, nonce });
@@ -422,14 +423,14 @@ const reportTamperOnChain = async (videoId, segmentIndex) => {
   }
 };
 
-// revokeVideo(videoId) - contract takes 1 param (no reason).
-// Status flips Active -> Revoked; the on-chain record itself stays forever.
 const revokeVideoOnChain = async (videoId) => {
   if (!isReady()) return { ok: false, error: "Blockchain not configured" };
+
   try {
     const from = requireAccount("newsAgency");
     const gasPrice = await getGasPrice();
     const nonce = await getNonce(from);
+
     const receipt = await contract.methods
       .revokeVideo(videoId)
       .send({ from, gas: 300000, gasPrice, nonce });
@@ -441,10 +442,6 @@ const revokeVideoOnChain = async (videoId) => {
     return { ok: false, error: shortError(err) };
   }
 };
-
-// =================================================================
-//  IMAGE FUNCTIONS
-// =================================================================
 
 const registerImageOnChain = async (
   imageId,
@@ -459,6 +456,7 @@ const registerImageOnChain = async (
   if (!isReady()) {
     return { ok: false, skipped: true, error: "Blockchain not configured" };
   }
+
   try {
     const from = requireAccount("newsAgency");
     let txReceipt = null;
@@ -466,6 +464,7 @@ const registerImageOnChain = async (
     await withRetry("registerImage", async () => {
       const gasPrice = await getGasPrice();
       const nonce = await getNonce(from);
+
       const receipt = await contract.methods
         .registerImage(
           imageId,
@@ -478,12 +477,14 @@ const registerImageOnChain = async (
           c2paInstanceId || ""
         )
         .send({ from, gas: 700000, gasPrice, nonce });
+
       txReceipt = formatReceipt(receipt);
     });
 
     console.log(
       `[blockchain] Image "${title}" registered: block=${txReceipt.blockNumber} gas=${txReceipt.gasUsed} tx=${txReceipt.txHash?.slice(0, 16)}...`
     );
+
     return { ok: true, txReceipt };
   } catch (err) {
     console.error("[blockchain] registerImage failed:", shortError(err));
@@ -495,10 +496,10 @@ const endorseImageOnChain = async (imageId) => {
   if (!isReady()) {
     return { ok: false, skipped: true, error: "Blockchain not configured" };
   }
+
   try {
     const broadcaster = requireAccount("broadcaster");
     const auditor = requireAccount("auditor");
-
     const gasPrice = await getGasPrice();
     const txReceipts = {};
 
@@ -523,12 +524,11 @@ const endorseImageOnChain = async (imageId) => {
       (txReceipts.broadcaster?.gasUsed || 0) +
       (txReceipts.auditor?.gasUsed || 0);
 
-    console.log(
-      `[blockchain] Image ${imageId} endorsed by Broadcaster + Auditor (gas=${totalGasUsed})`
-    );
+    console.log(`[blockchain] Image ${imageId} endorsed by Broadcaster + Auditor (gas=${totalGasUsed})`);
+
     return {
       ok: true,
-      endorsementCount: 3, // NewsAgency auto-endorsed on register
+      endorsementCount: 3,
       fullyEndorsed: true,
       txReceipts,
       totalGasUsed,
@@ -539,7 +539,6 @@ const endorseImageOnChain = async (imageId) => {
   }
 };
 
-// Register + 2 endorsements in one call (mirrors registerAndEndorse for video).
 const registerAndEndorseImage = async (
   imageId,
   title,
@@ -550,7 +549,6 @@ const registerAndEndorseImage = async (
   c2paManifestHash = "",
   c2paInstanceId = ""
 ) => {
-  // Step 1: Register (NewsAgency auto-endorses inside contract)
   const regResult = await registerImageOnChain(
     imageId,
     title,
@@ -561,9 +559,9 @@ const registerAndEndorseImage = async (
     c2paManifestHash,
     c2paInstanceId
   );
+
   if (!regResult.ok) return regResult;
 
-  // Step 2: Broadcaster + Auditor endorse
   const endorseResult = await endorseImageOnChain(imageId);
 
   return {
@@ -584,14 +582,13 @@ const registerAndEndorseImage = async (
 
 const getImageFromChain = async (imageId) => {
   if (!isReady()) return { exists: false };
+
   try {
-    // Contract was split into getImage + getImageStatus to keep both
-    // legs under the EVM stack budget for non-IR compilation. We merge
-    // them here so callers see one unified payload.
     const [base, status] = await Promise.all([
       withRetry(`getImage:${imageId}`, () => contract.methods.getImage(imageId).call(), 1),
       withRetry(`getImageStatus:${imageId}`, () => contract.methods.getImageStatus(imageId).call(), 1),
     ]);
+
     return {
       title: base.title,
       description: base.description,
@@ -604,7 +601,7 @@ const getImageFromChain = async (imageId) => {
       registeredAt: Number(status.registeredAt),
       endorsementCount: Number(status.endorsementCount),
       tamperReports: Number(status.tamperReports),
-      status: Number(status.status), // 0=Active 1=Revoked 2=Disputed
+      status: Number(status.status),
     };
   } catch (err) {
     console.error("[blockchain] getImage:", shortError(err));
@@ -614,10 +611,12 @@ const getImageFromChain = async (imageId) => {
 
 const reportImageTamperOnChain = async (imageId) => {
   if (!isReady()) return { ok: false, error: "Blockchain not configured" };
+
   try {
     const from = requireAccount("newsAgency");
     const gasPrice = await getGasPrice();
     const nonce = await getNonce(from);
+
     const receipt = await contract.methods
       .reportImageTamper(imageId)
       .send({ from, gas: 400000, gasPrice, nonce });
@@ -630,13 +629,14 @@ const reportImageTamperOnChain = async (imageId) => {
   }
 };
 
-// Status change only - record stays on blockchain forever (immutability).
 const revokeImageOnChain = async (imageId) => {
   if (!isReady()) return { ok: false, error: "Blockchain not configured" };
+
   try {
     const from = requireAccount("newsAgency");
     const gasPrice = await getGasPrice();
     const nonce = await getNonce(from);
+
     const receipt = await contract.methods
       .revokeImage(imageId)
       .send({ from, gas: 300000, gasPrice, nonce });
@@ -651,12 +651,14 @@ const revokeImageOnChain = async (imageId) => {
 
 const getImageEndorsementsFromChain = async (imageId) => {
   if (!isReady()) return [];
+
   try {
     const result = await withRetry(
       `getImageEndorsements:${imageId}`,
       () => contract.methods.getImageEndorsements(imageId).call(),
       1
     );
+
     return result[0].map((addr, i) => ({
       address: addr,
       orgName: result[1][i],
@@ -668,20 +670,14 @@ const getImageEndorsementsFromChain = async (imageId) => {
   }
 };
 
-// =================================================================
-//  TX LOG (mixed video + image actions)
-// =================================================================
-
 const getTxLogsFromChain = async (limit = 20) => {
   if (!isReady()) return [];
+
   try {
     const count = Number(
-      await withRetry(
-        "getTxLogCount",
-        () => contract.methods.getTxLogCount().call(),
-        1
-      )
+      await withRetry("getTxLogCount", () => contract.methods.getTxLogCount().call(), 1)
     );
+
     const logs = [];
     const start = Math.max(0, count - limit);
 
@@ -691,15 +687,17 @@ const getTxLogsFromChain = async (limit = 20) => {
         () => contract.methods.getTxLog(i).call(),
         1
       );
+
       logs.push({
         action: log.action,
-        mediaId: log.mediaId, // string: videoId or imageId (contract field renamed)
+        mediaId: log.mediaId,
         segmentIndex: Number(log.segmentIndex),
         actor: log.actor,
         orgName: log.orgName,
         timestamp: Number(log.timestamp),
       });
     }
+
     return logs.reverse();
   } catch (err) {
     console.error("[blockchain] getTxLogs:", shortError(err));
@@ -707,18 +705,17 @@ const getTxLogsFromChain = async (limit = 20) => {
   }
 };
 
-// =================================================================
-//  LISTING HELPERS (catalog sync)
-// =================================================================
-
 const getVideoIdsFromChain = async () => {
   if (!isReady()) return [];
+
   try {
     const count = Number(await contract.methods.getVideoIdCount().call());
     const ids = [];
+
     for (let i = 0; i < count; i += 1) {
       ids.push(await contract.methods.getVideoIdAt(i).call());
     }
+
     return ids;
   } catch (err) {
     console.error("[blockchain] getVideoIds:", shortError(err));
@@ -728,12 +725,15 @@ const getVideoIdsFromChain = async () => {
 
 const getImageIdsFromChain = async () => {
   if (!isReady()) return [];
+
   try {
     const count = Number(await contract.methods.getImageIdCount().call());
     const ids = [];
+
     for (let i = 0; i < count; i += 1) {
       ids.push(await contract.methods.getImageIdAt(i).call());
     }
+
     return ids;
   } catch (err) {
     console.error("[blockchain] getImageIds:", shortError(err));
@@ -741,13 +741,9 @@ const getImageIdsFromChain = async () => {
   }
 };
 
-// =================================================================
-//  EXPORTS
-// =================================================================
-
 module.exports = {
-  // Video
   registerVideoOnChain,
+  anchorMerkleRootOnChain,
   registerAndEndorse,
   registerAndEndorseBatch,
   verifyOnChain,
@@ -757,7 +753,6 @@ module.exports = {
   revokeVideoOnChain,
   getVideoIdsFromChain,
 
-  // Image
   registerImageOnChain,
   endorseImageOnChain,
   registerAndEndorseImage,
@@ -767,7 +762,6 @@ module.exports = {
   getImageEndorsementsFromChain,
   getImageIdsFromChain,
 
-  // Shared
   getTxLogsFromChain,
   isBlockchainReady,
   getTxReceipt,
