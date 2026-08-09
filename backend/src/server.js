@@ -6,6 +6,7 @@ const path = require("path");
 
 const uploadRoutes = require("./routes/upload.routes");
 const { router: authRoutes } = require("./routes/auth.routes");
+const { startFabricEventListener } = require("./services/fabric.service");
 
 const app = express();
 
@@ -48,4 +49,8 @@ app.use("/api/upload", uploadRoutes);
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+
+  // Subscribes to the channel once at boot and reconnects on its own; the
+  // server stays up regardless of whether Fabric is reachable.
+  startFabricEventListener();
 });

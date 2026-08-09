@@ -6,6 +6,10 @@ import { useTheme } from "../context/ThemeContext";
 
 const CONTRACT_ADDRESS = import.meta.env.VITE_CONTRACT_ADDRESS || "";
 const IPFS_GATEWAY = "https://gateway.pinata.cloud/ipfs";
+const FABRIC_CHANNEL = import.meta.env.VITE_FABRIC_CHANNEL_NAME || "mychannel";
+const FABRIC_CHAINCODE = import.meta.env.VITE_FABRIC_CHAINCODE_NAME || "truststreamcc";
+const FABRIC_MSP_ID = import.meta.env.VITE_FABRIC_MSP_ID || "Org1MSP";
+const FABRIC_PEER = import.meta.env.VITE_FABRIC_PEER_HOST_ALIAS || "peer0.org1.example.com";
 
 const buildGatewayUrl = (cid) => (cid ? `${IPFS_GATEWAY}/${cid}` : null);
 
@@ -72,6 +76,19 @@ function StatusBadge({ ok, label }) {
   );
 }
 
+function isFabricReady(image) {
+  if (image?.fabricStatus === "ready") return true;
+  if (image?.fabricResult && !image.fabricResult.skipped && !image.fabricError) return true;
+  return false;
+}
+
+function formatFabricStatus(image) {
+  if (image?.fabricError) return "degraded";
+  if (image?.fabricResult?.skipped) return "skipped";
+  if (isFabricReady(image)) return "ready";
+  return image?.fabricStatus || "pending";
+}
+
 export default function ImageDetail() {
   const { isDark } = useTheme();
   const { imageId } = useParams();
@@ -84,6 +101,9 @@ export default function ImageDetail() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [imgError, setImgError] = useState(false);
+  const [fabricCheck, setFabricCheck] = useState(null);
+  const [fabricCheckLoading, setFabricCheckLoading] = useState(false);
+  const [fabricCheckError, setFabricCheckError] = useState(null);
 
   useEffect(() => {
     if (!imageId) return;
@@ -171,6 +191,18 @@ export default function ImageDetail() {
     }
   };
 
+  const checkFabricAuthenticity = () => {
+    setFabricCheckLoading(true);
+    setFabricCheckError(null);
+    setFabricCheck(null);
+
+    imageAPI
+      .verifyFabric(imageId)
+      .then((res) => setFabricCheck(res.data))
+      .catch((err) => setFabricCheckError(err.response?.data?.error || "Check failed"))
+      .finally(() => setFabricCheckLoading(false));
+  };
+
   const handleReportTamper = async () => {
     if (!window.confirm("Report this image as tampered? This will be recorded permanently on the blockchain (immutable).")) {
       return;
@@ -217,6 +249,7 @@ export default function ImageDetail() {
               <StatusBadge ok={image.blockchainStatus === "ready"} label="Blockchain" />
               <StatusBadge ok={image.c2paSigned} label="C2PA" />
               <StatusBadge ok={image.ipfsStatus === "uploaded"} label="IPFS" />
+              <StatusBadge ok={isFabricReady(image)} label="Fabric" />
               <StatusBadge ok={(image.endorsementCount || 0) >= 2} label="Endorsed" />
 
               <Link
@@ -228,6 +261,17 @@ export default function ImageDetail() {
                 }`}
               >
                 View Audit Trail
+              </Link>
+
+              <Link
+                to="/fabric-audit"
+                className={`inline-flex items-center gap-1.5 text-[10px] font-semibold border rounded-full px-2.5 py-1 ${
+                  isDark
+                    ? "text-violet-300 bg-violet-950/20 border-violet-800/40 hover:bg-violet-900/30"
+                    : "text-violet-700 bg-violet-50 border-violet-200 hover:bg-violet-100"
+                }`}
+              >
+                Fabric Audit
               </Link>
 
               {image.forensicLabel && (
@@ -502,6 +546,142 @@ export default function ImageDetail() {
 
         <div className={`rounded-2xl border overflow-hidden ${cardBg}`}>
           <div className="px-6 py-5">
+            <SectionHeader icon="🏛" title="Hyperledger Fabric Proof" color="violet" isDark={isDark} />
+            <InfoRow label="Status" value={formatFabricStatus(image)} isDark={isDark} />
+            <InfoRow label="Network" value="Fabric test-network" isDark={isDark} />
+            <InfoRow label="Channel" value={FABRIC_CHANNEL} mono isDark={isDark} />
+            <InfoRow label="Chaincode" value={FABRIC_CHAINCODE} mono isDark={isDark} />
+            <InfoRow label="Peer" value={FABRIC_PEER} mono isDark={isDark} />
+            <InfoRow label="MSP" value={FABRIC_MSP_ID} mono isDark={isDark} />
+            <InfoRow label="Ledger Record" value={isFabricReady(image) ? "saved" : null} isDark={isDark} />
+            <InfoRow label="Media Type" value={image.fabricResult?.mediaType || "image"} isDark={isDark} />
+            <InfoRow label="Media ID" value={image.fabricResult?.mediaId || image.imageId} mono isDark={isDark} />
+            <InfoRow label="Created By" value={image.fabricResult?.createdBy || null} mono isDark={isDark} />
+            <InfoRow
+              label="Created At"
+              value={image.fabricResult?.createdAt ? new Date(image.fabricResult.createdAt).toLocaleString() : null}
+              isDark={isDark}
+            />
+            <InfoRow
+              label="Updated At"
+              value={image.fabricResult?.updatedAt ? new Date(image.fabricResult.updatedAt).toLocaleString() : null}
+              isDark={isDark}
+            />
+            <InfoRow label="Image Hash" value={image.fabricResult?.sha256Hash || image.sha256Hash} mono isDark={isDark} />
+            <InfoRow label="IPFS CID" value={image.fabricResult?.ipfsCid || image.ipfsCid} mono isDark={isDark} />
+            <InfoRow label="Metadata CID" value={image.fabricResult?.metadataCid || image.metadataCid} mono isDark={isDark} />
+            <InfoRow label="C2PA Hash" value={image.fabricResult?.c2paHash || image.c2paManifestHash} mono isDark={isDark} />
+            <InfoRow label="Error" value={image.fabricError || null} isDark={isDark} />
+
+            <div className={`pt-3 mt-1 border-t ${isDark ? "border-white/5" : "border-neutral-100"}`}>
+              <p className={`text-[10px] uppercase tracking-widest font-mono mb-3 ${textMuted}`}>
+                Fabric Consortium Endorsements
+              </p>
+
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { name: "NewsAgency", role: "Submitter", icon: "🏢", color: "text-emerald-400" },
+                  { name: "Broadcaster", role: "Endorser", icon: "📡", color: "text-blue-400" },
+                  { name: "Auditor", role: "Endorser", icon: "🔍", color: "text-violet-400" },
+                ].map(({ name, role, icon, color }) => {
+                  const endorsed = Boolean(image.fabricResult?.endorsements?.[name]);
+                  const endorsingPeer = image.fabricResult?.endorsingPeers?.[name];
+
+                  return (
+                    <div
+                      key={name}
+                      className={`rounded-xl p-3 border text-center ${
+                        endorsed
+                          ? isDark
+                            ? "bg-emerald-950/20 border-emerald-800/40"
+                            : "bg-emerald-50 border-emerald-200"
+                          : isDark
+                          ? "bg-neutral-800/40 border-neutral-700"
+                          : "bg-neutral-50 border-neutral-200"
+                      }`}
+                    >
+                      <div className="text-xl mb-1">{icon}</div>
+                      <p className={`text-[11px] font-semibold ${color}`}>{name}</p>
+                      <p className={`text-[9px] ${textMuted}`}>{role}</p>
+                      <p className={`text-[9px] mt-1 font-mono ${endorsed ? "text-emerald-400" : textMuted}`}>
+                        {endorsed ? "✓ Endorsed" : "— Pending"}
+                      </p>
+                      {endorsingPeer && (
+                        <p className={`text-[8px] mt-0.5 font-mono truncate ${textMuted}`} title={endorsingPeer}>
+                          via {endorsingPeer.split(".")[0]}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className={`pt-3 mt-3 border-t ${isDark ? "border-white/5" : "border-neutral-100"}`}>
+              <p className={`text-[10px] uppercase tracking-widest font-mono mb-3 ${textMuted}`}>
+                Check Authenticity
+              </p>
+
+              <button
+                onClick={checkFabricAuthenticity}
+                disabled={fabricCheckLoading}
+                className={`w-full rounded-xl py-2.5 text-xs font-semibold border transition-colors ${
+                  fabricCheckLoading
+                    ? "opacity-60 cursor-wait"
+                    : isDark
+                    ? "bg-violet-950/30 border-violet-800/40 text-violet-300 hover:bg-violet-950/50"
+                    : "bg-violet-50 border-violet-200 text-violet-700 hover:bg-violet-100"
+                }`}
+              >
+                {fabricCheckLoading
+                  ? "Re-fetching from IPFS and checking ledger…"
+                  : "🔎 Check Authenticity"}
+              </button>
+
+              {fabricCheckError && (
+                <p className="text-[11px] text-red-400 mt-2 font-mono">{fabricCheckError}</p>
+              )}
+
+              {fabricCheck && (
+                <div
+                  className={`mt-3 rounded-xl p-4 border ${
+                    fabricCheck.authentic
+                      ? isDark
+                        ? "bg-emerald-950/20 border-emerald-800/40"
+                        : "bg-emerald-50 border-emerald-200"
+                      : isDark
+                      ? "bg-red-950/20 border-red-800/40"
+                      : "bg-red-50 border-red-200"
+                  }`}
+                >
+                  <p
+                    className={`text-sm font-bold ${
+                      fabricCheck.authentic ? "text-emerald-400" : "text-red-400"
+                    }`}
+                  >
+                    {fabricCheck.authentic ? "✓ Authentic — matches the ledger" : "✗ Does not match the ledger"}
+                  </p>
+                  <div className={`mt-2 space-y-1 text-[10px] font-mono ${textMuted}`}>
+                    <p>IPFS copy intact: {fabricCheck.fileIntact ? "yes" : "no — content changed"}</p>
+                    <p>
+                      Fabric record valid:{" "}
+                      {fabricCheck.fabric?.available
+                        ? fabricCheck.fabric.valid
+                          ? "yes"
+                          : "no — hash mismatch"
+                        : `unavailable (${fabricCheck.fabric?.reason || "unknown"})`}
+                    </p>
+                    <p className="break-all">Current hash: {fabricCheck.currentHash}</p>
+                    <p className="break-all">Registered hash: {fabricCheck.registeredHash}</p>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className={`rounded-2xl border overflow-hidden ${cardBg}`}>
+          <div className="px-6 py-5">
             <SectionHeader icon="📌" title="IPFS Storage" color="orange" isDark={isDark} />
             <InfoRow label="Provider" value="Pinata" isDark={isDark} />
             <InfoRow label="Status" value={image.ipfsStatus} isDark={isDark} />
@@ -601,7 +781,7 @@ export default function ImageDetail() {
         </div>
 
         <p className={`text-center text-[9px] font-mono ${textMuted}`}>
-          TrustStream v1.0 · C2PA v2.2 · Ethereum Sepolia · IPFS via Pinata
+          TrustStream v1.0 · C2PA v2.2 · Ethereum Sepolia · Hyperledger Fabric · IPFS via Pinata
         </p>
       </div>
     </div>

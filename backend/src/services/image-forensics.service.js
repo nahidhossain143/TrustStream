@@ -351,20 +351,20 @@ const analyzeImageMetadata = ({ sourceInfo }) => {
   let weight = 0;
 
   if (tagCount === 0) {
-    weight += 0.9;
-    notes.push("No EXIF/format metadata — common after re-saving or stripping tools");
+    weight += 0.35;
+    notes.push("No EXIF/format metadata - common after browser/app upload or re-saving");
   }
   if (!make && !model) {
-    weight += 0.4;
-    notes.push("Camera make/model absent — typical of edited or web-resaved images");
+    weight += 0.15;
+    notes.push("Camera make/model absent - weak signal only; many uploads strip this");
   }
   if (software && SUSPICIOUS_SOFTWARE.test(software)) {
-    weight += 0.6;
+    weight += 0.8;
     notes.push(`Software tag indicates editor or AI generator: "${software}"`);
   }
   if (!dateTime) {
-    weight += 0.2;
-    notes.push("Capture date/time tag missing");
+    weight += 0.1;
+    notes.push("Capture date/time tag missing - weak signal only");
   }
   weight += timestampAnomalyScore;
 
@@ -375,7 +375,7 @@ const analyzeImageMetadata = ({ sourceInfo }) => {
     notes.push("Camera make/model present but date absent — metadata may have been partially stripped");
   }
 
-  const metadataAnomalyScore = clamp(weight / 2.4); // normalize
+  const metadataAnomalyScore = clamp(weight / 2.0); // conservative: missing metadata alone should not dominate
 
   return {
     module:               "image-metadata",
@@ -508,6 +508,69 @@ const analyzeELA = async ({ imagePath, codec }) => {
   }
 };
 
+// Final risk calibration.
+// Missing EXIF/camera tags alone are weak signals because browsers and upload
+// pipelines commonly strip them. We only lift an image into Suspicious when
+// metadata loss appears together with public-source/editing indicators.
+const calibrateImageRisk = ({ rawRiskScore, compression, metadata, ela, codec }) => {
+  const metrics = compression.metrics || {};
+  const fingerprint = metadata.fingerprint || {};
+
+  const tagCount = Number(fingerprint.tagCount || 0);
+  const hasCamera = Boolean(fingerprint.make || fingerprint.model);
+  const hasDateTime = Boolean(fingerprint.dateTime);
+  const software = fingerprint.software || metrics.pngSoftwareTag || "";
+
+  const pixelCount = Number(metrics.pixelCount || 0);
+  const dimensionScore = Number(metrics.dimensionAnomalyScore || 0);
+  const compressionScore = Number(compression.compressionScore || 0);
+  const metadataScore = Number(metadata.metadataAnomalyScore || 0);
+  const elaScore = Number(ela.elaScore || 0);
+
+  const metadataStripped = tagCount === 0 && !hasCamera && !hasDateTime;
+  const veryLowResolution = pixelCount > 0 && pixelCount < 100000;
+  const tinyImage = pixelCount > 0 && pixelCount < 50000;
+  const croppedOrOddAspect = dimensionScore >= 0.2;
+  const webFormat = codec === "png" || codec === "webp";
+  const editorSoftware = Boolean(software && SUSPICIOUS_SOFTWARE.test(software));
+  const compressionEvidence = compressionScore >= 0.25;
+
+  let calibratedScore = rawRiskScore;
+  const calibrationNotes = [];
+
+  if (elaScore >= 0.75) {
+    calibratedScore = Math.max(calibratedScore, 0.65);
+    calibrationNotes.push("Strong ELA re-save evidence - likely manipulated");
+  } else if (elaScore >= 0.5 && (compressionEvidence || metadataScore >= 0.35)) {
+    calibratedScore = Math.max(calibratedScore, 0.5);
+    calibrationNotes.push("ELA re-save evidence combined with another anomaly - suspicious");
+  }
+
+  if (editorSoftware) {
+    calibratedScore = Math.max(calibratedScore, 0.45);
+    calibrationNotes.push("Editor/AI/software metadata found - suspicious");
+  }
+
+  if (metadataStripped && veryLowResolution && croppedOrOddAspect) {
+    calibratedScore = Math.max(calibratedScore, 0.35);
+    calibrationNotes.push("Metadata stripped plus low-resolution cropped dimensions - public/resaved source suspected");
+  }
+
+  if (metadataStripped && webFormat && tinyImage && compressionEvidence) {
+    calibratedScore = Math.max(calibratedScore, 0.38);
+    calibrationNotes.push("Tiny web-format image with compression evidence - public/resaved source suspected");
+  }
+
+  if (calibratedScore <= 0.3 && metadataStripped) {
+    calibrationNotes.push("Metadata is missing, but no strong edit/public-source evidence was found");
+  }
+
+  return {
+    imageRiskScore: clamp(calibratedScore),
+    calibrationNotes,
+  };
+};
+
 // ═════════════════════════════════════════════════════════
 //  PUBLIC ENTRYPOINT
 // ═════════════════════════════════════════════════════════
@@ -540,17 +603,26 @@ const analyzeImageForensics = async ({ imageId, imagePath, title }) => {
   // ── Score fusion (3-module image variant) ─────────────
   // risk = 0.45×Compression + 0.30×Metadata + 0.25×ELA
   // ELA score is 0 for non-JPEG (neutral — doesn't penalize PNG/WebP)
-  const imageRiskScore = clamp(
+  const rawImageRiskScore = clamp(
     0.45 * compression.compressionScore +
     0.30 * metadata.metadataAnomalyScore +
     0.25 * ela.elaScore
   );
 
+  const calibrated = calibrateImageRisk({
+    rawRiskScore: rawImageRiskScore,
+    compression,
+    metadata,
+    ela,
+    codec,
+  });
+
+  const imageRiskScore = calibrated.imageRiskScore;
   const finalLabel = labelForScore(imageRiskScore);
 
   console.log(
     `[forensics-image] ${imageId}: risk=${round(imageRiskScore)} label="${finalLabel}" ` +
-    `(C=${compression.compressionScore} M=${metadata.metadataAnomalyScore} ELA=${ela.elaScore})`
+    `(raw=${round(rawImageRiskScore)} C=${compression.compressionScore} M=${metadata.metadataAnomalyScore} ELA=${ela.elaScore})`
   );
 
   return {
@@ -568,6 +640,7 @@ const analyzeImageForensics = async ({ imageId, imagePath, title }) => {
     },
     // Top-level scalars for quick access in frontend / catalog
     imageRiskScore:    round(imageRiskScore),
+    rawImageRiskScore: round(rawImageRiskScore),
     finalLabel,
     compressionScore:  compression.compressionScore,
     metadataScore:     metadata.metadataAnomalyScore,
@@ -576,6 +649,7 @@ const analyzeImageForensics = async ({ imageId, imagePath, title }) => {
       ...compression.notes,
       ...metadata.notes,
       ...ela.notes,
+      ...calibrated.calibrationNotes,
     ],
     formula: "risk = 0.45*Compression + 0.30*Metadata + 0.25*ELA",
     limitations: [

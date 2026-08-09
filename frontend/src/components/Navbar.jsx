@@ -55,10 +55,12 @@ export default function Navbar() {
     >
       {/* Logo */}
       <div className="flex items-center gap-3">
+        {/* logo-mark is the emblem cropped out of the full artwork; the
+            original 3:2 illustration was unreadable squeezed into this box. */}
         <img
-          src="/logo.png"
-          alt="TrustStream Logo"
-          className="w-12 h-12 object-contain"
+          src="/logo-mark.png"
+          alt="TrustStream"
+          className="w-10 h-10 rounded-xl object-cover shadow-sm"
         />
 
         <h1

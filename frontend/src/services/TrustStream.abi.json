@@ -1,9 +1,9 @@
 {
   "contractName": "TrustStream",
-  "address": "0x3ee8f0B4b1DFa9D79068aEB1cC9D369Ab6DC53F9",
+  "address": "0xc9c1F5a7a6461308A93a736Bc314DFAE1CaCD566",
   "chainId": 11155111,
   "network": "sepolia",
-  "deployedAt": "2026-05-24T17:30:01.208Z",
+  "deployedAt": "2026-08-01T06:54:13.109Z",
   "abi": [
     {
       "inputs": [
@@ -235,6 +235,43 @@
         }
       ],
       "name": "ImageTamperReported",
+      "type": "event"
+    },
+    {
+      "anonymous": false,
+      "inputs": [
+        {
+          "indexed": true,
+          "internalType": "string",
+          "name": "videoId",
+          "type": "string"
+        },
+        {
+          "indexed": true,
+          "internalType": "bytes32",
+          "name": "merkleRoot",
+          "type": "bytes32"
+        },
+        {
+          "indexed": true,
+          "internalType": "address",
+          "name": "anchoredBy",
+          "type": "address"
+        },
+        {
+          "indexed": false,
+          "internalType": "uint256",
+          "name": "totalSegments",
+          "type": "uint256"
+        },
+        {
+          "indexed": false,
+          "internalType": "uint256",
+          "name": "timestamp",
+          "type": "uint256"
+        }
+      ],
+      "name": "MerkleRootAnchored",
       "type": "event"
     },
     {
@@ -483,6 +520,24 @@
         }
       ],
       "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "string",
+          "name": "videoId",
+          "type": "string"
+        },
+        {
+          "internalType": "bytes32",
+          "name": "merkleRoot",
+          "type": "bytes32"
+        }
+      ],
+      "name": "anchorMerkleRoot",
+      "outputs": [],
+      "stateMutability": "nonpayable",
       "type": "function"
     },
     {
@@ -816,6 +871,40 @@
           "internalType": "uint8",
           "name": "status",
           "type": "uint8"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "string",
+          "name": "videoId",
+          "type": "string"
+        }
+      ],
+      "name": "getMerkleRoot",
+      "outputs": [
+        {
+          "internalType": "bytes32",
+          "name": "merkleRoot",
+          "type": "bytes32"
+        },
+        {
+          "internalType": "address",
+          "name": "anchoredBy",
+          "type": "address"
+        },
+        {
+          "internalType": "uint256",
+          "name": "anchoredAt",
+          "type": "uint256"
+        },
+        {
+          "internalType": "bool",
+          "name": "exists",
+          "type": "bool"
         }
       ],
       "stateMutability": "view",

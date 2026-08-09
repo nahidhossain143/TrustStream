@@ -55,7 +55,21 @@ const {
   getImageFromChain,
   getImageEndorsementsFromChain,
   reportImageTamperOnChain,
+  revokeVideoOnChain,
+  revokeImageOnChain,
 } = require("../services/blockchain.service");
+
+const {
+  registerVideoProof,
+  registerImageProof,
+  verifyVideoProof,
+  verifyImageProof,
+  revokeMediaProof,
+  getMediaHistory,
+  queryLedger,
+  fabricEvents,
+  getEventStreamStatus,
+} = require("../services/fabric.service");
 
 const {
   uploadSegmentToIPFS,
@@ -219,10 +233,14 @@ const buildVideoSummary = (manifest) => ({
   registeredAt: manifest.createdAt,
   metadataCid: manifest.metadataCid,
   metadataUrl: manifest.metadataCid ? buildGatewayUrl(manifest.metadataCid) : null,
+  merkleRoot: manifest.merkleRoot || null,
   thumbnailUrl: manifest.thumbnailUrl || null,
   status: manifest.status,
   ipfsStatus: manifest.ipfsStatus,
   blockchainStatus: manifest.blockchainStatus,
+  fabricStatus: manifest.fabricStatus || "pending",
+  fabricResult: manifest.fabricResult || null,
+  fabricError: manifest.fabricError || null,
   c2paStatus: manifest.c2paStatus || "pending",
   videoTxHash: manifest.videoTxHash || null,
   videoBlockNumber: manifest.videoBlockNumber || null,
@@ -298,6 +316,58 @@ const uploadWithRetry = async (localPath, filename, maxRetries = 3) => {
   return null;
 };
 
+const buildMerkleRootFromSegments = (segments = []) => {
+  let level = segments
+    .map((segment) => segment.chainHash || segment.sha256Hash)
+    .filter(Boolean)
+    .map((hash) => hash.replace(/^0x/, ""))
+    .map((hash) => Buffer.from(hash, "hex"));
+
+  if (!level.length) return "";
+
+  while (level.length > 1) {
+    const next = [];
+    for (let i = 0; i < level.length; i += 2) {
+      const left = level[i];
+      const right = level[i + 1] || left;
+      next.push(crypto.createHash("sha256").update(Buffer.concat([left, right])).digest());
+    }
+    level = next;
+  }
+
+  return `0x${level[0].toString("hex")}`;
+};
+
+// Re-hashes every segment file from disk right now (not the cached manifest
+// value) and rebuilds the sequential chain-hash + Merkle root exactly as at
+// upload time. Comparing this against the root stored on the Fabric ledger
+// is what actually proves the local copy hasn't drifted since registration.
+const recomputeMerkleRootFromDisk = async (segments = []) => {
+  let prevHash = null;
+  const fresh = [];
+
+  for (const segment of segments) {
+    const sha256Hash = await hashFile(segment.localPath);
+    const chainHash = crypto
+      .createHash("sha256")
+      .update(Buffer.from(sha256Hash + (prevHash || ""), "hex"))
+      .digest("hex");
+
+    fresh.push({ index: segment.index, sha256Hash, chainHash });
+    prevHash = sha256Hash;
+  }
+
+  return { merkleRoot: buildMerkleRootFromSegments(fresh), segments: fresh };
+};
+
+const withTimeout = (promise, ms, label) =>
+  Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms)
+    ),
+  ]);
+
 const IPFS_BATCH_SIZE = 2;
 
 // =================================================================
@@ -334,6 +404,10 @@ const buildImageSummary = (manifest) => ({
   endorsementCount: manifest.endorsementCount || 0,
   fullyEndorsed: manifest.fullyEndorsed || false,
   blockchainStatus: manifest.blockchainStatus,
+  fabricStatus: manifest.fabricStatus || "pending",
+  fabricResult: manifest.fabricResult || null,
+  fabricError: manifest.fabricError || null,
+  fabricCompletedAt: manifest.fabricCompletedAt || null,
   ipfsStatus: manifest.ipfsStatus,
   status: manifest.status,
   txHash: manifest.txHash || null,
@@ -486,9 +560,49 @@ const syncVideoToIpfsAndChain = async (videoId) => {
     updateManifest(videoId, (cur) => ({
       ...cur,
       blockchainStatus: "skipped",
+      fabricStatus: "skipped",
       backgroundError: "Metadata upload to IPFS failed",
     }));
     return;
+  }
+
+  try {
+    updateManifest(videoId, (cur) => ({
+      ...cur,
+      fabricStatus: "registering",
+      fabricError: null,
+    }));
+
+    manifest = readManifest(videoId);
+    if (!manifest) return;
+
+    const merkleRoot = manifest.merkleRoot || buildMerkleRootFromSegments(manifest.segments);
+
+    const fabricResult = await registerVideoProof({
+      videoId: manifest.videoId,
+      title: manifest.title,
+      metadataCid,
+      merkleRoot,
+      totalSegments: manifest.totalSegments,
+    });
+
+    console.log("[fabric] RegisterVideoProof success:", fabricResult);
+
+    updateManifest(videoId, (cur) => ({
+      ...cur,
+      merkleRoot,
+      fabricStatus: fabricResult?.skipped ? "skipped" : "ready",
+      fabricResult,
+      fabricError: null,
+    }));
+  } catch (fabricErr) {
+    console.error("[upload] Fabric RegisterVideoProof failed:", fabricErr.message);
+
+    updateManifest(videoId, (cur) => ({
+      ...cur,
+      fabricStatus: "degraded",
+      fabricError: fabricErr.message,
+    }));
   }
 
   updateManifest(videoId, (cur) => ({ ...cur, blockchainStatus: "registering" }));
@@ -690,7 +804,50 @@ const syncImageToIpfsAndChain = async (imageId, opts = {}) => {
   const metadataUrl = buildGatewayUrl(metadataCid);
   updateImageManifest(imageId, (cur) => ({ ...cur, metadataCid, metadataUrl }));
 
-  // Step 5: Register on blockchain + 2 endorsements (3-org consortium).
+  // Step 5: Register image proof on Hyperledger Fabric.
+  try {
+    updateImageManifest(imageId, (cur) => ({
+      ...cur,
+      fabricStatus: "registering",
+      fabricError: null,
+    }));
+
+    manifest = readImageManifest(imageId);
+
+    const fabricResult = await withTimeout(
+      registerImageProof({
+        imageId,
+        title: manifest.title,
+        sha256Hash: manifest.sha256Hash,
+        ipfsCid,
+        metadataCid: metadataCid || "",
+        c2paHash: manifest.c2paManifestHash || "",
+      }),
+      20000,
+      "Fabric RegisterImageProof"
+    );
+
+    console.log("[fabric] RegisterImageProof success:", fabricResult);
+
+    updateImageManifest(imageId, (cur) => ({
+      ...cur,
+      fabricStatus: fabricResult?.skipped ? "skipped" : "ready",
+      fabricResult,
+      fabricError: null,
+      fabricCompletedAt: new Date().toISOString(),
+    }));
+  } catch (fabricErr) {
+    console.error("[upload-image] Fabric RegisterImageProof failed:", fabricErr.message);
+
+    updateImageManifest(imageId, (cur) => ({
+      ...cur,
+      fabricStatus: "degraded",
+      fabricError: fabricErr.message,
+      fabricCompletedAt: new Date().toISOString(),
+    }));
+  }
+
+  // Step 6: Register on blockchain + 2 endorsements (3-org consortium).
   console.log(`[upload-image] registering ${imageId} on blockchain...`);
   updateImageManifest(imageId, (cur) => ({ ...cur, blockchainStatus: "registering" }));
 
@@ -858,8 +1015,14 @@ router.post("/", videoUpload, async (req, res) => {
       playlistUrl: `/streams/${videoId}/playlist.m3u8`,
       thumbnailUrl,
       metadataCid: null, metadataUrl: null,
+      merkleRoot: null,
       status: "ready", ipfsStatus: "pending",
-      blockchainStatus: "pending", c2paStatus: "pending",
+      blockchainStatus: "pending",
+      fabricStatus: "pending",
+      fabricResult: null,
+      fabricError: null,
+      fabricCompletedAt: null,
+      c2paStatus: "pending",
       backgroundError: null,
       videoTxHash: null, videoBlockNumber: null,
       videoTxEtherscan: null, totalGasUsed: null,
@@ -1040,6 +1203,50 @@ router.post("/verify", async (req, res) => {
   });
 });
 
+// One-click authenticity check: re-hashes the video's stored segment files
+// right now and asks the Fabric ledger whether that matches what NewsAgency,
+// Broadcaster, and Auditor jointly endorsed at registration time. No manual
+// hash entry required -- this checks TrustStream's own copy against the
+// immutable record, unlike /verify which checks a hash the caller supplies.
+router.post("/:videoId/verify-fabric", async (req, res) => {
+  const { videoId } = req.params;
+  const manifest = readManifest(videoId);
+  if (!manifest) return res.status(404).json({ error: "Video not found" });
+
+  if (manifest.fabricStatus !== "ready") {
+    return res.status(409).json({
+      error: "This video has no confirmed Fabric registration to verify against",
+      fabricStatus: manifest.fabricStatus || "pending",
+    });
+  }
+
+  try {
+    const missingFile = (manifest.segments || []).find(
+      (seg) => !seg.localPath || !fs.existsSync(seg.localPath)
+    );
+    if (missingFile) {
+      return res.status(410).json({
+        error: `Segment ${missingFile.index} is no longer available locally to re-hash`,
+      });
+    }
+
+    const fresh = await recomputeMerkleRootFromDisk(manifest.segments || []);
+    const fileIntact = fresh.merkleRoot === manifest.merkleRoot;
+
+    const fabric = await verifyVideoProof(videoId, fresh.merkleRoot);
+
+    res.json({
+      currentMerkleRoot: fresh.merkleRoot,
+      registeredMerkleRoot: manifest.merkleRoot,
+      fileIntact,
+      fabric,
+      authentic: fileIntact && fabric.available && fabric.valid === true,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post("/report-tamper", async (req, res) => {
   const { videoId, segmentIndex } = req.body;
   if (!videoId || segmentIndex === undefined) {
@@ -1145,6 +1352,9 @@ router.post("/image", imageUpload.single("image"), async (req, res) => {
       status: "ready",
       ipfsStatus: "pending",
       blockchainStatus: "pending",
+      fabricStatus: "pending",
+      fabricResult: null,
+      fabricError: null,
       c2paStatus: "pending",
       c2paSigned: false,
       c2paManifestHash: null,
@@ -1317,6 +1527,49 @@ router.post("/images/verify", async (req, res) => {
   });
 });
 
+// One-click authenticity check for images: re-fetches the image from IPFS
+// (its canonical stored copy), re-hashes it right now, and asks the Fabric
+// ledger whether that matches what all three orgs endorsed at registration.
+router.post("/images/:imageId/verify-fabric", async (req, res) => {
+  const { imageId } = req.params;
+  const manifest = readImageManifest(imageId);
+  if (!manifest) return res.status(404).json({ error: "Image not found" });
+
+  if (manifest.fabricStatus !== "ready") {
+    return res.status(409).json({
+      error: "This image has no confirmed Fabric registration to verify against",
+      fabricStatus: manifest.fabricStatus || "pending",
+    });
+  }
+
+  if (!manifest.ipfsCid) {
+    return res.status(410).json({ error: "Image has no IPFS copy to re-hash" });
+  }
+
+  try {
+    const response = await fetch(buildGatewayUrl(manifest.ipfsCid));
+    if (!response.ok) {
+      return res.status(502).json({ error: `IPFS gateway returned ${response.status}` });
+    }
+
+    const bytes = Buffer.from(await response.arrayBuffer());
+    const currentHash = crypto.createHash("sha256").update(bytes).digest("hex");
+    const fileIntact = currentHash === manifest.sha256Hash;
+
+    const fabric = await verifyImageProof(imageId, currentHash);
+
+    res.json({
+      currentHash,
+      registeredHash: manifest.sha256Hash,
+      fileIntact,
+      fabric,
+      authentic: fileIntact && fabric.available && fabric.valid === true,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post("/images/report-tamper", async (req, res) => {
   const { imageId } = req.body;
   if (!imageId) return res.status(400).json({ error: "imageId required" });
@@ -1387,6 +1640,224 @@ router.get("/feed", async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// =================================================================
+//  FABRIC AUDIT DASHBOARD
+//  Lists every media item's Hyperledger Fabric registration record
+//  (endorsements, which peer endorsed per org, proof hash) so the
+//  consortium's ledger activity is browsable without a peer CLI.
+// =================================================================
+
+const FABRIC_ORG_NAME_BY_MSP = {
+  Org1MSP: "NewsAgency",
+  Org2MSP: "Broadcaster",
+  Org3MSP: "Auditor",
+};
+
+router.get("/blockchain/fabric-audit", async (req, res) => {
+  try {
+    const videos = listManifests({ kind: "video" }).map(buildVideoSummary);
+    const images = listImageManifests().map(buildImageSummary);
+
+    const entries = [...videos, ...images]
+      .filter((m) => m.fabricStatus && m.fabricStatus !== "pending")
+      .map((m) => ({
+        id: m.id,
+        mediaType: m.mediaType,
+        title: m.title || m.id,
+        registeredAt: m.registeredAt,
+        fabricStatus: m.fabricStatus,
+        fabricError: m.fabricError || null,
+        proofHash: m.mediaType === "video" ? m.merkleRoot : m.sha256Hash,
+        createdByMsp: m.fabricResult?.createdBy || null,
+        createdByOrg: FABRIC_ORG_NAME_BY_MSP[m.fabricResult?.createdBy] || null,
+        endorsements: m.fabricResult?.endorsements || null,
+        endorsingPeers: m.fabricResult?.endorsingPeers || null,
+        revoked: m.status === "revoked",
+        revokedAt: m.revokedAt || null,
+        revocationReason: m.revocationReason || null,
+      }))
+      .sort((a, b) => new Date(b.registeredAt) - new Date(a.registeredAt));
+
+    res.json({
+      summary: {
+        total: entries.length,
+        ready: entries.filter((e) => e.fabricStatus === "ready").length,
+        degraded: entries.filter((e) => e.fabricStatus === "degraded").length,
+        skipped: entries.filter((e) => e.fabricStatus === "skipped").length,
+      },
+      entries,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =================================================================
+//  REVOCATION  (Ethereum + Fabric)
+//
+//  Revoking withdraws the consortium's endorsement. It never deletes the
+//  record: both chains keep the original registration, and this writes a
+//  revocation on top of it, so the fact that it was once vouched for stays
+//  visible and auditable.
+// =================================================================
+
+const revokeMedia = async ({ kind, id, reason }) => {
+  const isVideo = kind === "video";
+
+  const manifest = isVideo ? readManifest(id) : readImageManifest(id);
+  if (!manifest) return { notFound: true };
+
+  if (manifest.status === "revoked") {
+    return { alreadyRevoked: true };
+  }
+
+  const revokedAt = new Date().toISOString();
+
+  // Local catalog first so the UI reflects the decision immediately; both
+  // chains are then updated independently and their outcome recorded.
+  const applyLocal = (extra) => {
+    const updater = (cur) => ({ ...cur, ...extra });
+    return isVideo ? updateManifest(id, updater) : updateImageManifest(id, updater);
+  };
+
+  applyLocal({ status: "revoked", revokedAt, revocationReason: reason || "" });
+
+  const [ethereum, fabric] = await Promise.all([
+    (isVideo ? revokeVideoOnChain(id) : revokeImageOnChain(id)).catch((err) => ({
+      ok: false,
+      error: err.message,
+    })),
+    revokeMediaProof(kind, id, reason).catch((err) => ({ error: err.message })),
+  ]);
+
+  applyLocal({
+    revocationEthereum: ethereum,
+    revocationFabric: fabric,
+    fabricRevoked: !fabric?.error && !fabric?.skipped,
+  });
+
+  return { revoked: true, kind, id, revokedAt, ethereum, fabric };
+};
+
+router.post("/:videoId/revoke", async (req, res) => {
+  try {
+    const result = await revokeMedia({
+      kind: "video",
+      id: req.params.videoId,
+      reason: req.body?.reason,
+    });
+
+    if (result.notFound) return res.status(404).json({ error: "Video not found" });
+    if (result.alreadyRevoked)
+      return res.status(409).json({ error: "This video is already revoked" });
+
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post("/images/:imageId/revoke", async (req, res) => {
+  try {
+    const result = await revokeMedia({
+      kind: "image",
+      id: req.params.imageId,
+      reason: req.body?.reason,
+    });
+
+    if (result.notFound) return res.status(404).json({ error: "Image not found" });
+    if (result.alreadyRevoked)
+      return res.status(409).json({ error: "This image is already revoked" });
+
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =================================================================
+//  FABRIC LEDGER HISTORY + RICH QUERY
+// =================================================================
+
+// Every version of this record on the ledger, each with the transaction that
+// produced it -- read from the history index, not from current state.
+router.get("/blockchain/fabric-history/:kind/:id", async (req, res) => {
+  const { kind, id } = req.params;
+
+  if (kind !== "video" && kind !== "image") {
+    return res.status(400).json({ error: "kind must be 'video' or 'image'" });
+  }
+
+  try {
+    res.json(await getMediaHistory(kind, id));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// CouchDB-backed queries over the ledger's current state.
+//   ?by=org&value=Org2MSP   ?by=type&value=video   ?by=revoked
+router.get("/blockchain/fabric-query", async (req, res) => {
+  const { by, value } = req.query;
+
+  const lookup = {
+    org: () => queryLedger("QueryByOrg", [value]),
+    type: () => queryLedger("QueryByMediaType", [value]),
+    revoked: () => queryLedger("QueryRevoked"),
+  }[by];
+
+  if (!lookup) {
+    return res.status(400).json({ error: "by must be one of: org, type, revoked" });
+  }
+
+  if (by !== "revoked" && !value) {
+    return res.status(400).json({ error: `value is required when by=${by}` });
+  }
+
+  try {
+    res.json(await lookup());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Server-Sent Events stream of Fabric chaincode events. The dashboard opens
+// this once and gets pushed every new registration as its block commits, so it
+// stays current without polling.
+//
+// SSE (not WebSockets) because the traffic is one-way and EventSource
+// reconnects on its own if the backend restarts.
+router.get("/blockchain/fabric-events", (req, res) => {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    // Without this, nginx-style proxies buffer the stream and nothing arrives
+    // until the connection closes.
+    "X-Accel-Buffering": "no",
+  });
+
+  const send = (type, data) =>
+    res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
+
+  send("ready", getEventStreamStatus());
+
+  const onRegistered = (payload) => send("MediaRegistered", payload);
+  const onRevoked = (payload) => send("MediaRevoked", payload);
+  fabricEvents.on("MediaRegistered", onRegistered);
+  fabricEvents.on("MediaRevoked", onRevoked);
+
+  // Idle proxies drop connections they think are dead; a comment line keeps
+  // this one warm without showing up as an event on the client.
+  const heartbeat = setInterval(() => res.write(": ping\n\n"), 25000);
+
+  req.on("close", () => {
+    clearInterval(heartbeat);
+    fabricEvents.off("MediaRegistered", onRegistered);
+    fabricEvents.off("MediaRevoked", onRevoked);
+  });
 });
 
 // =================================================================
