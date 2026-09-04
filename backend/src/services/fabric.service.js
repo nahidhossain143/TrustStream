@@ -28,7 +28,7 @@ async function getFirstKeyFile(keyDir) {
   return path.join(keyDir, keyFile);
 }
 
-async function getFabricContract() {
+async function createFabricConnection() {
   const tlsCert = await fs.readFile(process.env.FABRIC_TLS_CERT_PATH);
   const credentials = grpc.credentials.createSsl(tlsCert);
 
@@ -62,6 +62,41 @@ async function getFabricContract() {
   const contract = network.getContract(process.env.FABRIC_CHAINCODE_NAME);
 
   return { gateway, client, contract };
+}
+
+// A Fabric Gateway connection carries a gRPC channel, a TLS handshake, and a
+// service-discovery round trip -- real fixed costs that opening and closing
+// a fresh one for every request pays repeatedly for no benefit. One shared
+// connection is reused across every register/verify/revoke/query call below.
+let cachedConnection = null;
+
+async function getFabricContract() {
+  if (!cachedConnection) {
+    cachedConnection = createFabricConnection().catch((err) => {
+      cachedConnection = null;
+      throw err;
+    });
+  }
+  return cachedConnection;
+}
+
+// Drops the cached connection so the next call reconnects from scratch.
+// Used after a request fails, since the failure might be connection-level
+// (peer restart, dropped gRPC channel) rather than a chaincode rejection --
+// this does not retry the failed call itself, so a write is never resubmitted
+// automatically.
+function invalidateFabricConnection() {
+  const stale = cachedConnection;
+  cachedConnection = null;
+
+  if (stale) {
+    stale
+      .then(({ gateway, client }) => {
+        gateway.close();
+        client.close();
+      })
+      .catch(() => {});
+  }
 }
 
 function parseFabricResult(result) {
@@ -127,10 +162,15 @@ async function submitWithEndorsingPeers(contract, fnName, args) {
   const transaction = await proposal.endorse();
   const endorsingPeers = getEndorsingPeersByOrg(transaction);
   const commit = await transaction.submit();
-  await commit.getStatus();
+  const status = await commit.getStatus();
 
   const proof = parseFabricResult(transaction.getResult());
   proof.endorsingPeers = endorsingPeers;
+  // Fabric's tx-id + committed block number, the direct replacement for
+  // Ethereum's txHash/blockNumber in the UI -- there is no separate receipt
+  // to fetch, the commit status already carries both.
+  proof.txId = status.transactionId;
+  proof.blockNumber = status.blockNumber.toString();
   return proof;
 }
 
@@ -148,7 +188,7 @@ async function registerVideoProof({
     };
   }
 
-  const { gateway, client, contract } = await getFabricContract();
+  const { contract } = await getFabricContract();
 
   try {
     return await submitWithEndorsingPeers(contract, "RegisterVideoProof", [
@@ -158,9 +198,9 @@ async function registerVideoProof({
       String(merkleRoot || ""),
       String(totalSegments || 0),
     ]);
-  } finally {
-    gateway.close();
-    client.close();
+  } catch (err) {
+    invalidateFabricConnection();
+    throw err;
   }
 }
 
@@ -179,7 +219,7 @@ async function registerImageProof({
     };
   }
 
-  const { gateway, client, contract } = await getFabricContract();
+  const { contract } = await getFabricContract();
 
   try {
     return await submitWithEndorsingPeers(contract, "RegisterImageProof", [
@@ -190,9 +230,9 @@ async function registerImageProof({
       String(metadataCid || ""),
       String(c2paHash || ""),
     ]);
-  } finally {
-    gateway.close();
-    client.close();
+  } catch (err) {
+    invalidateFabricConnection();
+    throw err;
   }
 }
 
@@ -201,7 +241,7 @@ async function verifyVideoProof(videoId, currentMerkleRoot) {
     return { available: false, reason: "FABRIC_ENABLED is not true" };
   }
 
-  const { gateway, client, contract } = await getFabricContract();
+  const { contract } = await getFabricContract();
 
   try {
     const result = await contract.evaluateTransaction(
@@ -211,10 +251,8 @@ async function verifyVideoProof(videoId, currentMerkleRoot) {
     );
     return { available: true, ...parseFabricResult(result) };
   } catch (err) {
+    invalidateFabricConnection();
     return { available: false, reason: err.message };
-  } finally {
-    gateway.close();
-    client.close();
   }
 }
 
@@ -223,7 +261,7 @@ async function verifyImageProof(imageId, currentSha256Hash) {
     return { available: false, reason: "FABRIC_ENABLED is not true" };
   }
 
-  const { gateway, client, contract } = await getFabricContract();
+  const { contract } = await getFabricContract();
 
   try {
     const result = await contract.evaluateTransaction(
@@ -233,10 +271,8 @@ async function verifyImageProof(imageId, currentSha256Hash) {
     );
     return { available: true, ...parseFabricResult(result) };
   } catch (err) {
+    invalidateFabricConnection();
     return { available: false, reason: err.message };
-  } finally {
-    gateway.close();
-    client.close();
   }
 }
 
@@ -248,7 +284,7 @@ async function revokeMediaProof(mediaType, mediaId, reason) {
     return { skipped: true, reason: "FABRIC_ENABLED is not true" };
   }
 
-  const { gateway, client, contract } = await getFabricContract();
+  const { contract } = await getFabricContract();
 
   try {
     return await submitWithEndorsingPeers(contract, "RevokeMedia", [
@@ -256,9 +292,49 @@ async function revokeMediaProof(mediaType, mediaId, reason) {
       String(mediaId),
       String(reason || ""),
     ]);
-  } finally {
-    gateway.close();
-    client.close();
+  } catch (err) {
+    invalidateFabricConnection();
+    throw err;
+  }
+}
+
+// A single org flags a proof as possibly tampered. The chaincode excludes the
+// creating org from counting toward its own item's dispute and requires
+// TAMPER_THRESHOLD distinct (non-creator) orgs before flipping to "disputed".
+async function reportTamper(mediaType, mediaId) {
+  if (process.env.FABRIC_ENABLED !== "true") {
+    return { skipped: true, reason: "FABRIC_ENABLED is not true" };
+  }
+
+  const { contract } = await getFabricContract();
+
+  try {
+    return await submitWithEndorsingPeers(contract, "ReportTamper", [
+      String(mediaType),
+      String(mediaId),
+    ]);
+  } catch (err) {
+    invalidateFabricConnection();
+    throw err;
+  }
+}
+
+// Auditor-only recovery from a disputed status back to active.
+async function clearDispute(mediaType, mediaId) {
+  if (process.env.FABRIC_ENABLED !== "true") {
+    return { skipped: true, reason: "FABRIC_ENABLED is not true" };
+  }
+
+  const { contract } = await getFabricContract();
+
+  try {
+    return await submitWithEndorsingPeers(contract, "ClearDispute", [
+      String(mediaType),
+      String(mediaId),
+    ]);
+  } catch (err) {
+    invalidateFabricConnection();
+    throw err;
   }
 }
 
@@ -269,7 +345,7 @@ async function getMediaHistory(mediaType, mediaId) {
     return { available: false, reason: "FABRIC_ENABLED is not true" };
   }
 
-  const { gateway, client, contract } = await getFabricContract();
+  const { contract } = await getFabricContract();
 
   try {
     const result = await contract.evaluateTransaction(
@@ -279,10 +355,8 @@ async function getMediaHistory(mediaType, mediaId) {
     );
     return { available: true, history: parseFabricResult(result) };
   } catch (err) {
+    invalidateFabricConnection();
     return { available: false, reason: err.message };
-  } finally {
-    gateway.close();
-    client.close();
   }
 }
 
@@ -293,7 +367,7 @@ async function queryLedger(fnName, args = []) {
     return { available: false, reason: "FABRIC_ENABLED is not true" };
   }
 
-  const { gateway, client, contract } = await getFabricContract();
+  const { contract } = await getFabricContract();
 
   try {
     const result = await contract.evaluateTransaction(
@@ -302,10 +376,8 @@ async function queryLedger(fnName, args = []) {
     );
     return { available: true, results: parseFabricResult(result) };
   } catch (err) {
+    invalidateFabricConnection();
     return { available: false, reason: err.message };
-  } finally {
-    gateway.close();
-    client.close();
   }
 }
 
@@ -327,7 +399,11 @@ fabricEvents.setMaxListeners(0);
 let eventStreamState = { running: false, error: null, lastBlock: null };
 
 async function runEventStream() {
-  const { gateway, client } = await getFabricContract();
+  // Deliberately not the shared pooled connection from getFabricContract():
+  // this loop closes and reopens its connection on every reconnect (peer
+  // restart, dropped stream), which would otherwise tear down the connection
+  // that concurrent register/verify/revoke calls are relying on.
+  const { gateway, client } = await createFabricConnection();
   const network = gateway.getNetwork(process.env.FABRIC_CHANNEL_NAME);
 
   // Only events from here on; replaying history would re-announce every past
@@ -403,6 +479,8 @@ module.exports = {
   verifyVideoProof,
   verifyImageProof,
   revokeMediaProof,
+  reportTamper,
+  clearDispute,
   getMediaHistory,
   queryLedger,
   fabricEvents,

@@ -2,6 +2,12 @@
 
 const { Contract } = require("fabric-contract-api");
 
+// 2 of the 3 orgs (excluding whichever org created the proof) must report
+// tamper before the consortium treats it as disputed. Mirrors the intent of
+// a 2-of-3 quorum without requiring the uploader's own org to vouch against
+// itself.
+const TAMPER_THRESHOLD = 2;
+
 class TrustStreamContract extends Contract {
   async InitLedger(ctx) {
     return "TrustStream ledger initialized";
@@ -120,6 +126,8 @@ class TrustStreamContract extends Contract {
         Broadcaster: true,
         Auditor: true
       },
+      status: "active",
+      tamperReports: {},
       createdBy: ctx.clientIdentity.getMSPID(),
       createdAt: now,
       updatedAt: now
@@ -156,6 +164,8 @@ class TrustStreamContract extends Contract {
         Broadcaster: true,
         Auditor: true
       },
+      status: "active",
+      tamperReports: {},
       createdBy: ctx.clientIdentity.getMSPID(),
       createdAt: now,
       updatedAt: now
@@ -182,6 +192,109 @@ class TrustStreamContract extends Contract {
   async GetMediaProof(ctx, mediaType, mediaId) {
     const key = this._key(mediaType, mediaId);
     const proof = await this._readProof(ctx, key);
+    return JSON.stringify(proof);
+  }
+
+  // A single org flags a proof as possibly tampered. The org that originally
+  // created the proof is excluded from counting toward its own item's
+  // dispute -- a consortium member should not be able to (even partially)
+  // dispute the very thing it vouched for at registration. The report is
+  // still recorded either way, just not counted.
+  //
+  // Reporting is idempotent per org: calling this twice from the same org
+  // only ever counts once, so repeated calls cannot manufacture a dispute
+  // alone. Once TAMPER_THRESHOLD distinct (non-creator) orgs have reported,
+  // the proof flips to "disputed" and every further write except
+  // RevokeMedia/ClearDispute is blocked until an Auditor clears it.
+  async ReportTamper(ctx, mediaType, mediaId) {
+    const key = this._key(mediaType, mediaId);
+    const proof = await this._readProof(ctx, key);
+
+    if (proof.status === "revoked") {
+      throw new Error(`Cannot report tamper on a revoked proof: ${key}`);
+    }
+
+    const orgName = this._orgName(ctx);
+    const now = this._now(ctx);
+
+    if (!proof.tamperReports) proof.tamperReports = {};
+
+    if (proof.createdBy === ctx.clientIdentity.getMSPID()) {
+      // Recorded for audit purposes but never counted toward the threshold.
+      proof.uploaderSelfReportAt = now;
+    } else {
+      proof.tamperReports[orgName] = true;
+    }
+
+    const reportCount = Object.values(proof.tamperReports).filter(Boolean).length;
+
+    if (reportCount >= TAMPER_THRESHOLD && proof.status !== "disputed") {
+      proof.status = "disputed";
+      proof.disputedAt = now;
+
+      ctx.stub.setEvent(
+        "MediaDisputed",
+        Buffer.from(
+          JSON.stringify({
+            mediaType: proof.mediaType,
+            mediaId: proof.mediaId,
+            title: proof.title,
+            reportingOrgs: Object.keys(proof.tamperReports),
+            disputedAt: now,
+          })
+        )
+      );
+    }
+
+    proof.updatedAt = now;
+    await ctx.stub.putState(key, Buffer.from(JSON.stringify(proof)));
+
+    return JSON.stringify(proof);
+  }
+
+  // Auditor-only recovery from a false-positive dispute. Without this,
+  // "disputed" would be a dead end -- the only way out would be RevokeMedia,
+  // which permanently kills the content instead of clearing a mistaken flag.
+  // Prior tamper reports and the dispute itself are not erased: they remain
+  // visible via GetMediaHistory, which reads the ledger's version history
+  // rather than current state.
+  async ClearDispute(ctx, mediaType, mediaId) {
+    const mspId = ctx.clientIdentity.getMSPID();
+
+    if (mspId !== "Org3MSP") {
+      throw new Error("Only Org3MSP (Auditor) may clear a dispute");
+    }
+
+    const key = this._key(mediaType, mediaId);
+    const proof = await this._readProof(ctx, key);
+
+    if (proof.status !== "disputed") {
+      throw new Error(`Proof is not currently disputed: ${key}`);
+    }
+
+    const now = this._now(ctx);
+
+    proof.status = "active";
+    proof.tamperReports = {};
+    proof.disputeClearedAt = now;
+    proof.disputeClearedBy = mspId;
+    proof.updatedAt = now;
+
+    await ctx.stub.putState(key, Buffer.from(JSON.stringify(proof)));
+
+    ctx.stub.setEvent(
+      "MediaDisputeCleared",
+      Buffer.from(
+        JSON.stringify({
+          mediaType: proof.mediaType,
+          mediaId: proof.mediaId,
+          title: proof.title,
+          clearedBy: mspId,
+          clearedAt: now,
+        })
+      )
+    );
+
     return JSON.stringify(proof);
   }
 
@@ -316,11 +429,13 @@ class TrustStreamContract extends Contract {
     const hashMatches =
       String(proof.merkleRoot).toLowerCase() === String(merkleRoot).toLowerCase();
     const revoked = proof.status === "revoked";
+    const disputed = proof.status === "disputed";
 
     return JSON.stringify({
-      valid: hashMatches && !revoked,
+      valid: hashMatches && !revoked && !disputed,
       hashMatches,
       revoked,
+      disputed,
       proof
     });
   }
@@ -331,11 +446,13 @@ class TrustStreamContract extends Contract {
     const hashMatches =
       String(proof.sha256Hash).toLowerCase() === String(sha256Hash).toLowerCase();
     const revoked = proof.status === "revoked";
+    const disputed = proof.status === "disputed";
 
     return JSON.stringify({
-      valid: hashMatches && !revoked,
+      valid: hashMatches && !revoked && !disputed,
       hashMatches,
       revoked,
+      disputed,
       proof
     });
   }
