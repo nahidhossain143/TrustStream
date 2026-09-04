@@ -72,11 +72,11 @@ export default function VideoPlayer({ videoId, playlistUrl, posterUrl, onVerify 
       await api.post("/upload/report-tamper", {
         videoId,
         segmentIndex,
-        evidence: `Hash mismatch detected by viewer. Browser computed: ${clientHash}. Blockchain stored: ${storedHash}`,
+        evidence: `Hash mismatch detected by viewer. Browser computed: ${clientHash}. Stored: ${storedHash}`,
       });
-      console.warn(`⚠️ Tamper reported on-chain: seg ${segmentIndex}`);
+      console.warn(`⚠️ Tamper reported to Fabric ledger: seg ${segmentIndex}`);
     } catch (err) {
-      console.error("Failed to report tamper on-chain:", err.message);
+      console.error("Failed to report tamper:", err.message);
     }
   };
 
@@ -113,7 +113,6 @@ export default function VideoPlayer({ videoId, playlistUrl, posterUrl, onVerify 
           clientHash,
         });
 
-        const bc = verifyRes.data.blockchain;
         const c2paData = verifyRes.data.c2pa;
         const isMatch = verifyRes.data.isMatch;
 
@@ -123,13 +122,6 @@ export default function VideoPlayer({ videoId, playlistUrl, posterUrl, onVerify 
           storedHash: verifyRes.data.storedHash,
           ipfsCid: verifyRes.data.ipfsCid,
           ipfsUrl: verifyRes.data.ipfsUrl,
-          blockchainAvailable: bc?.available || false,
-          blockchainVerified: bc?.hashMatch || null,
-          blockchainError: bc?.error || null,
-          fullyEndorsed: bc?.fullyEndorsed || null,
-          endorsementCount: bc?.endorsementCount || null,
-          isTampered: bc?.isTampered || false,
-          videoStatus: bc?.videoStatus || 0,
           c2pa: c2paData ? {
             signed: c2paData.signed || false,
             valid: c2paData.valid || false,
@@ -171,8 +163,7 @@ export default function VideoPlayer({ videoId, playlistUrl, posterUrl, onVerify 
         console.error("Verification error:", err);
         const errorData = {
           segmentIndex,
-          blockchainAvailable: false,
-          blockchainError: "Verification service temporarily unavailable",
+          verifyError: "Verification service temporarily unavailable",
           c2pa: null,
         };
         verificationCache.current[segmentIndex] = { status: "warning", data: errorData };

@@ -122,6 +122,13 @@ const uploadImageToIPFS = (filePath, fileName) =>
   pinFile(filePath, fileName, `image_${fileName}`, "image");
 
 /**
+ * Upload a video's C2PA-embedded source MP4 to IPFS - the video-level
+ * "source of record" artifact, distinct from the per-segment .ts pins.
+ */
+const uploadVideoSourceToIPFS = (filePath, fileName) =>
+  pinFile(filePath, fileName, `video_source_${fileName}`, "video-source");
+
+/**
  * Upload a video manifest's metadata JSON to IPFS.
  * Convention: "metadata_<videoId>".
  */
@@ -134,14 +141,6 @@ const uploadMetadataToIPFS = (metadata) =>
  */
 const uploadImageMetadataToIPFS = (metadata) =>
   pinJson(metadata, `image_metadata_${metadata.imageId}`, "image-metadata");
-
-/**
- * Upload a signed C2PA image sidecar manifest as JSON to IPFS.
- * Convention: "image_c2pa_<imageId>". Used in the IPFS-only image
- * pipeline so verification works without a local sidecar file.
- */
-const uploadImageC2paToIPFS = (signedManifest, imageId) =>
-  pinJson(signedManifest, `image_c2pa_${imageId}`, "image-c2pa");
 
 /**
  * Fetch a JSON document from IPFS via the configured gateway.
@@ -160,6 +159,23 @@ const fetchJsonFromIPFS = async (cid) => {
 };
 
 /**
+ * Fetch raw file bytes from IPFS via the configured gateway.
+ * Used to re-fetch the pinned (C2PA-embedded) image/video for
+ * verification. Returns null on miss / network failure.
+ */
+const fetchBufferFromIPFS = async (cid) => {
+  if (!cid) return null;
+  try {
+    const url = `${IPFS_GATEWAY}/${cid}`;
+    const response = await axios.get(url, { timeout: 20000, responseType: "arraybuffer" });
+    return Buffer.from(response.data);
+  } catch (err) {
+    console.warn(`[ipfs] buffer fetch failed for CID ${cid}: ${err.message}`);
+    return null;
+  }
+};
+
+/**
  * Build a public gateway URL for a CID, or null if no CID provided.
  */
 const buildGatewayUrl = (cid) => {
@@ -171,9 +187,10 @@ module.exports = {
   uploadJsonToIPFS,
   uploadSegmentToIPFS,
   uploadImageToIPFS,
+  uploadVideoSourceToIPFS,
   uploadMetadataToIPFS,
   uploadImageMetadataToIPFS,
-  uploadImageC2paToIPFS,
   fetchJsonFromIPFS,
+  fetchBufferFromIPFS,
   buildGatewayUrl,
 };

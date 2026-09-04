@@ -1,49 +1,8 @@
-import { useState, useEffect } from "react";
-import { onAccountChange, onChainChange } from "../services/wallet";
+import { Link } from "react-router-dom";
 import { useTheme } from "../context/ThemeContext";
 
 export default function Navbar() {
-  const [address, setAddress] = useState(null);
-  const [connecting, setConnecting] = useState(false);
   const { isDark, toggleTheme } = useTheme();
-
-  useEffect(() => {
-    setAddress(null);
-    onAccountChange((addr) => setAddress(addr || null));
-    onChainChange(() => setAddress(null));
-  }, []);
-
-  const handleConnect = async () => {
-    if (!window.ethereum) {
-      alert("MetaMask installed নেই!");
-      return;
-    }
-    setConnecting(true);
-    try {
-      try {
-        await window.ethereum.request({
-          method: "wallet_revokePermissions",
-          params: [{ eth_accounts: {} }],
-        });
-      } catch (e) {
-        console.log("Revoke not supported, continuing...");
-      }
-      await window.ethereum.request({
-        method: "wallet_switchEthereumChain",
-        params: [{ chainId: "0xaa36a7" }],
-      });
-      const accounts = await window.ethereum.request({
-        method: "eth_requestAccounts",
-      });
-      setAddress(accounts[0] || null);
-    } catch (err) {
-      console.error("Wallet connect error:", err);
-    }
-    setConnecting(false);
-  };
-
-  const shortAddress = (addr) =>
-    addr ? `${addr.slice(0, 6)}...${addr.slice(-4)}` : null;
 
   return (
     <div
@@ -74,6 +33,18 @@ export default function Navbar() {
 
       {/* Right side */}
       <div className="flex items-center gap-3">
+        {/* Public verify-by-upload link */}
+        <Link
+          to="/verify"
+          className={`hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${
+            isDark
+              ? "border-neutral-700 text-neutral-300 hover:border-blue-500 hover:text-blue-400"
+              : "border-neutral-200 text-neutral-600 hover:border-blue-400 hover:text-blue-600"
+          }`}
+        >
+          🔍 Verify Content
+        </Link>
+
         {/* LIVE badge */}
         <span className="flex items-center gap-1.5 px-3 py-1 bg-red-600/90 text-white text-[10px] font-bold rounded-full shadow-lg shadow-red-900/30">
           <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
@@ -120,39 +91,6 @@ export default function Navbar() {
             </svg>
           )}
         </button>
-
-        {/* MetaMask */}
-        {address ? (
-          <div
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-full border transition-colors ${
-              isDark
-                ? "bg-emerald-950/40 border-emerald-700/40"
-                : "bg-emerald-50 border-emerald-200"
-            }`}
-          >
-            <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-            <span
-              className={`text-[11px] font-mono font-semibold ${
-                isDark ? "text-emerald-400" : "text-emerald-700"
-              }`}
-            >
-              {shortAddress(address)}
-            </span>
-          </div>
-        ) : (
-          <button
-            onClick={handleConnect}
-            disabled={connecting}
-            className="flex items-center gap-2 px-3 py-1.5 bg-orange-500 hover:bg-orange-400 disabled:opacity-50 text-white text-[11px] font-semibold rounded-full transition-all shadow-lg shadow-orange-900/30"
-          >
-            <img
-              src="https://upload.wikimedia.org/wikipedia/commons/3/36/MetaMask_Fox.svg"
-              alt="MetaMask"
-              className="w-3.5 h-3.5"
-            />
-            {connecting ? "Connecting..." : "Connect Wallet"}
-          </button>
-        )}
 
         {/* Avatar */}
         <div className="w-7 h-7 rounded-full bg-gradient-to-br from-blue-500 to-violet-600 shadow-lg shadow-blue-900/20" />

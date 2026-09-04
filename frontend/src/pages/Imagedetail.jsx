@@ -4,7 +4,6 @@ import { imageAPI } from "../services/api";
 import Navbar from "../components/Navbar";
 import { useTheme } from "../context/ThemeContext";
 
-const CONTRACT_ADDRESS = import.meta.env.VITE_CONTRACT_ADDRESS || "";
 const IPFS_GATEWAY = "https://gateway.pinata.cloud/ipfs";
 const FABRIC_CHANNEL = import.meta.env.VITE_FABRIC_CHANNEL_NAME || "mychannel";
 const FABRIC_CHAINCODE = import.meta.env.VITE_FABRIC_CHAINCODE_NAME || "truststreamcc";
@@ -96,14 +95,15 @@ export default function ImageDetail() {
 
   const [image, setImage] = useState(null);
   const [c2paData, setC2paData] = useState(null);
-  const [chainData, setChainData] = useState(null);
-  const [endorsements, setEndorsements] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [imgError, setImgError] = useState(false);
   const [fabricCheck, setFabricCheck] = useState(null);
   const [fabricCheckLoading, setFabricCheckLoading] = useState(false);
   const [fabricCheckError, setFabricCheckError] = useState(null);
+  const [tamperReporting, setTamperReporting] = useState(false);
+  const [clearingDispute, setClearingDispute] = useState(false);
+  const [showRawProof, setShowRawProof] = useState(false);
 
   useEffect(() => {
     if (!imageId) return;
@@ -111,14 +111,10 @@ export default function ImageDetail() {
     Promise.all([
       imageAPI.getOne(imageId),
       imageAPI.getC2pa(imageId).catch(() => ({ data: null })),
-      imageAPI.blockchain.getImage(imageId).catch(() => ({ data: null })),
-      imageAPI.blockchain.getEndorsements(imageId).catch(() => ({ data: { endorsements: [] } })),
     ])
-      .then(([imgRes, c2paRes, chainRes, endorseRes]) => {
+      .then(([imgRes, c2paRes]) => {
         setImage(imgRes.data);
         setC2paData(c2paRes.data);
-        setChainData(chainRes.data);
-        setEndorsements(endorseRes.data?.endorsements || []);
       })
       .catch(() => setError("Image not found"))
       .finally(() => setLoading(false));
@@ -160,14 +156,13 @@ export default function ImageDetail() {
   }
 
   const imgSrc = image.ipfsCid ? buildGatewayUrl(image.ipfsCid) : null;
+  const disputed = image.fabricResult?.status === "disputed";
   const statusLabel =
-    image.status === 0 || image.status === "active"
-      ? "Active"
-      : image.status === 1 || image.status === "revoked"
+    image.status === "revoked"
       ? "Revoked"
-      : image.status === 2 || image.status === "disputed"
+      : disputed
       ? "Disputed"
-      : image.blockchainStatus;
+      : "Active";
 
   const handleVerify = async () => {
     if (!image.sha256Hash) {
@@ -204,15 +199,32 @@ export default function ImageDetail() {
   };
 
   const handleReportTamper = async () => {
-    if (!window.confirm("Report this image as tampered? This will be recorded permanently on the blockchain (immutable).")) {
+    if (!window.confirm("Report this image as tampered? This will be recorded permanently on the Fabric ledger (immutable). 2 of 3 orgs must report before it's marked Disputed.")) {
       return;
     }
 
+    setTamperReporting(true);
     try {
       await imageAPI.reportTamper(imageId);
-      alert("Tamper report submitted. Will be confirmed on-chain shortly.");
+      const res = await imageAPI.getOne(imageId);
+      setImage(res.data);
     } catch (err) {
-      alert("Failed: " + err.message);
+      alert("Failed: " + (err.response?.data?.error || err.message));
+    } finally {
+      setTamperReporting(false);
+    }
+  };
+
+  const handleClearDispute = async () => {
+    setClearingDispute(true);
+    try {
+      await imageAPI.clearDispute(imageId);
+      const res = await imageAPI.getOne(imageId);
+      setImage(res.data);
+    } catch (err) {
+      alert("Failed: " + (err.response?.data?.error || err.message));
+    } finally {
+      setClearingDispute(false);
     }
   };
 
@@ -246,11 +258,14 @@ export default function ImageDetail() {
             </div>
 
             <div className="flex gap-2 flex-wrap">
-              <StatusBadge ok={image.blockchainStatus === "ready"} label="Blockchain" />
               <StatusBadge ok={image.c2paSigned} label="C2PA" />
               <StatusBadge ok={image.ipfsStatus === "uploaded"} label="IPFS" />
               <StatusBadge ok={isFabricReady(image)} label="Fabric" />
-              <StatusBadge ok={(image.endorsementCount || 0) >= 2} label="Endorsed" />
+              {disputed && (
+                <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold border rounded-full px-2.5 py-1 text-red-400 bg-red-950/30 border-red-800/40">
+                  ⚠ Disputed
+                </span>
+              )}
 
               <Link
                 to={`/timeline/image/${imageId}`}
@@ -418,19 +433,6 @@ export default function ImageDetail() {
 
         <div className={`rounded-2xl border p-4 ${cardBg}`}>
           <div className="flex items-center gap-2 flex-wrap">
-            {image.txHash && (
-              <a
-                href={`https://sepolia.etherscan.io/tx/${image.txHash}`}
-                target="_blank"
-                rel="noreferrer"
-                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-all ${
-                  isDark ? "bg-white/5 text-neutral-300 border-white/10 hover:bg-white/10" : "bg-neutral-100 text-neutral-700 border-neutral-200 hover:bg-neutral-200"
-                }`}
-              >
-                ⛓ View on Etherscan ↗
-              </a>
-            )}
-
             {image.metadataCid && (
               <a
                 href={buildGatewayUrl(image.metadataCid)}
@@ -453,17 +455,36 @@ export default function ImageDetail() {
               🛡 Verify Hash
             </button>
 
-            <button
-              onClick={handleReportTamper}
-              className="ml-auto flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg text-red-500 hover:bg-red-500/10 border border-transparent hover:border-red-500/30 transition-all"
-              title="Permanent on-chain tamper record"
-            >
-              ⚠ Report Tamper
-            </button>
+            {disputed ? (
+              <button
+                onClick={handleClearDispute}
+                disabled={clearingDispute}
+                className={`ml-auto flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-all ${
+                  clearingDispute
+                    ? "opacity-60 cursor-wait"
+                    : "text-emerald-500 hover:bg-emerald-500/10 border-transparent hover:border-emerald-500/30"
+                }`}
+              >
+                {clearingDispute ? "Clearing…" : "✓ Clear Dispute (Auditor only)"}
+              </button>
+            ) : (
+              <button
+                onClick={handleReportTamper}
+                disabled={tamperReporting}
+                className={`ml-auto flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-all ${
+                  tamperReporting
+                    ? "opacity-60 cursor-wait"
+                    : "text-red-500 hover:bg-red-500/10 border-transparent hover:border-red-500/30"
+                }`}
+                title="Permanent Fabric ledger tamper record"
+              >
+                {tamperReporting ? "Reporting…" : "⚠ Report Tamper"}
+              </button>
+            )}
           </div>
 
           <p className={`text-[10px] font-mono mt-3 ${textMuted}`}>
-            Note: tamper reports are permanent on-chain. 2 reports flip image status to "Disputed".
+            Note: tamper reports are permanent on the Fabric ledger. 2 distinct orgs must report before status flips to "Disputed".
           </p>
         </div>
 
@@ -479,68 +500,6 @@ export default function ImageDetail() {
             <InfoRow label="Uploader" value={image.uploader || "NewsAgency"} isDark={isDark} />
             <InfoRow label="Status" value={statusLabel} isDark={isDark} />
             <InfoRow label="SHA-256" value={image.sha256Hash} mono isDark={isDark} />
-          </div>
-        </div>
-
-        <div className={`rounded-2xl border overflow-hidden ${cardBg}`}>
-          <div className="px-6 py-5">
-            <SectionHeader icon="⛓" title="Blockchain Info" color="emerald" isDark={isDark} />
-            <InfoRow label="Network" value="Ethereum Sepolia Testnet" isDark={isDark} />
-            <InfoRow label="Chain ID" value="11155111" isDark={isDark} />
-            <InfoRow
-              label="Contract"
-              value={CONTRACT_ADDRESS}
-              mono
-              link={`https://sepolia.etherscan.io/address/${CONTRACT_ADDRESS}`}
-              isDark={isDark}
-            />
-            <InfoRow label="Status" value={image.blockchainStatus} isDark={isDark} />
-            <InfoRow label="Register TX" value={image.txHash} mono link={image.txHash ? `https://sepolia.etherscan.io/tx/${image.txHash}` : null} isDark={isDark} />
-            <InfoRow label="Broadcaster TX" value={image.txHashBroadcaster} mono link={image.txHashBroadcaster ? `https://sepolia.etherscan.io/tx/${image.txHashBroadcaster}` : null} isDark={isDark} />
-            <InfoRow label="Auditor TX" value={image.txHashAuditor} mono link={image.txHashAuditor ? `https://sepolia.etherscan.io/tx/${image.txHashAuditor}` : null} isDark={isDark} />
-            <InfoRow label="Block" value={image.blockNumber?.toString()} mono isDark={isDark} />
-            <InfoRow label="Total Gas" value={image.totalGasUsed ? `${image.totalGasUsed.toLocaleString()} units` : null} isDark={isDark} />
-            <InfoRow label="Endorsements" value={`${image.endorsementCount || 0} / 3`} isDark={isDark} />
-            <InfoRow label="Immutability" value="Record permanent — delete not possible" isDark={isDark} />
-
-            {chainData?.exists && (
-              <>
-                <InfoRow label="Chain Hash" value={chainData.sha256Hash} mono isDark={isDark} />
-                <InfoRow label="Chain IPFS CID" value={chainData.ipfsCid} mono isDark={isDark} />
-              </>
-            )}
-
-            <div className={`pt-3 mt-1 border-t ${isDark ? "border-white/5" : "border-neutral-100"}`}>
-              <p className={`text-[10px] uppercase tracking-widest font-mono mb-3 ${textMuted}`}>
-                3-Org Consortium Endorsements
-              </p>
-
-              <div className="grid grid-cols-3 gap-2">
-                {[
-                  { name: "NewsAgency", role: "Submitter", icon: "🏢", color: "text-emerald-400" },
-                  { name: "Broadcaster", role: "Endorser", icon: "📡", color: "text-blue-400" },
-                  { name: "Auditor", role: "Endorser", icon: "🔍", color: "text-violet-400" },
-                ].map(({ name, role, icon, color }, i) => {
-                  const endorsed = endorsements[i] || i < (image.endorsementCount || 0);
-
-                  return (
-                    <div
-                      key={name}
-                      className={`rounded-xl p-3 border text-center ${
-                        isDark ? "bg-neutral-800/40 border-neutral-700" : "bg-neutral-50 border-neutral-200"
-                      }`}
-                    >
-                      <div className="text-xl mb-1">{icon}</div>
-                      <p className={`text-[11px] font-semibold ${color}`}>{name}</p>
-                      <p className={`text-[9px] ${textMuted}`}>{role}</p>
-                      <p className={`text-[9px] mt-1 font-mono ${endorsed ? "text-emerald-500" : textMuted}`}>
-                        {endorsed ? "✓ Endorsed" : "Pending"}
-                      </p>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
           </div>
         </div>
 
@@ -619,6 +578,27 @@ export default function ImageDetail() {
 
             <div className={`pt-3 mt-3 border-t ${isDark ? "border-white/5" : "border-neutral-100"}`}>
               <p className={`text-[10px] uppercase tracking-widest font-mono mb-3 ${textMuted}`}>
+                Tamper Reports &amp; Dispute
+              </p>
+
+              {disputed ? (
+                <div className={`rounded-xl p-4 border ${isDark ? "bg-red-950/20 border-red-800/40" : "bg-red-50 border-red-200"}`}>
+                  <p className="text-sm font-bold text-red-400">
+                    ⚠ Disputed — 2 of 3 orgs reported possible tampering
+                  </p>
+                  <p className={`text-[10px] font-mono mt-1 ${textMuted}`}>
+                    Reporting orgs: {Object.keys(image.fabricResult?.tamperReports || {}).join(", ") || "—"}
+                  </p>
+                </div>
+              ) : (
+                <p className={`text-[11px] ${textMuted}`}>
+                  No active dispute. Use "Report Tamper" above if this content looks manipulated.
+                </p>
+              )}
+            </div>
+
+            <div className={`pt-3 mt-3 border-t ${isDark ? "border-white/5" : "border-neutral-100"}`}>
+              <p className={`text-[10px] uppercase tracking-widest font-mono mb-3 ${textMuted}`}>
                 Check Authenticity
               </p>
 
@@ -677,6 +657,27 @@ export default function ImageDetail() {
                 </div>
               )}
             </div>
+
+            {image.fabricResult && (
+              <div className={`pt-3 mt-3 border-t ${isDark ? "border-white/5" : "border-neutral-100"}`}>
+                <button
+                  onClick={() => setShowRawProof((v) => !v)}
+                  className={`text-[10px] font-mono uppercase tracking-wider px-2.5 py-1 rounded-full border transition-colors ${
+                    isDark ? "border-white/10 text-neutral-400 hover:border-white/20" : "border-neutral-200 text-neutral-500 hover:border-neutral-300"
+                  }`}
+                >
+                  {showRawProof ? "▾ Hide raw ledger JSON" : "▸ View raw ledger JSON"}
+                </button>
+
+                {showRawProof && (
+                  <pre className={`mt-2 rounded-xl p-3 text-[10px] font-mono overflow-x-auto whitespace-pre-wrap break-all ${
+                    isDark ? "bg-neutral-950 border border-white/8 text-neutral-300" : "bg-neutral-50 border border-neutral-200 text-neutral-700"
+                  }`}>
+                    {JSON.stringify(image.fabricResult, null, 2)}
+                  </pre>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
@@ -697,10 +698,10 @@ export default function ImageDetail() {
             <SectionHeader icon="▪" title="C2PA Provenance" color="violet" isDark={isDark} />
             <InfoRow label="Spec Version" value="C2PA v2.2" isDark={isDark} />
             <InfoRow label="Status" value={image.c2paStatus} isDark={isDark} />
-            <InfoRow label="Assertions" value="7 per image (no chain_hash — single unit)" isDark={isDark} />
-            <InfoRow label="Algorithm" value="HMAC-SHA256" isDark={isDark} />
-            <InfoRow label="Signer" value="NewsAgency" isDark={isDark} />
-            <InfoRow label="Format" value="Sidecar .c2pa file alongside image" isDark={isDark} />
+            <InfoRow label="Assertions" value="Actions + Creative Work + Consortium (+ auto hash-binding)" isDark={isDark} />
+            <InfoRow label="Algorithm" value="ES256 (P-256 ECDSA, X.509 cert chain)" isDark={isDark} />
+            <InfoRow label="Signer" value="TrustStream C2PA Signer" isDark={isDark} />
+            <InfoRow label="Format" value="Embedded in image bytes (real C2PA JUMBF)" isDark={isDark} />
             <InfoRow label="Instance ID" value={image.c2paInstanceId || c2paData?.c2paInstanceId} mono isDark={isDark} />
             <InfoRow label="Manifest Hash" value={image.c2paManifestHash || c2paData?.c2paManifestHash} mono isDark={isDark} />
             <InfoRow label="Signed At" value={image.c2paSignedAt ? new Date(image.c2paSignedAt).toLocaleString() : null} isDark={isDark} />
@@ -708,7 +709,7 @@ export default function ImageDetail() {
             {c2paData?.verification && (
               <div className={`mt-3 pt-3 border-t ${isDark ? "border-white/5" : "border-neutral-100"}`}>
                 <p className={`text-[10px] uppercase tracking-widest font-mono mb-2 ${textMuted}`}>
-                  Signature Verification
+                  Signature Verification {c2paData.verification.validation_state ? `(${c2paData.verification.validation_state})` : ""}
                 </p>
                 <div className={`rounded-lg px-3 py-2.5 border text-[11px] font-mono ${
                   c2paData.verification.valid
@@ -716,22 +717,19 @@ export default function ImageDetail() {
                     : isDark ? "bg-red-950/20 border-red-800/30 text-red-400" : "bg-red-50 border-red-200 text-red-700"
                 }`}>
                   {c2paData.verification.valid
-                    ? "✓ Signature valid — manifest not tampered"
+                    ? "✓ Signature + hash-binding valid — manifest not tampered"
                     : `✗ ${c2paData.verification.error || "Signature invalid"}`}
                 </div>
               </div>
             )}
 
             <div className={`pt-3 mt-1 border-t ${isDark ? "border-white/5" : "border-neutral-100"}`}>
-              <p className={`text-[10px] uppercase tracking-widest font-mono mb-3 ${textMuted}`}>7 Assertions</p>
+              <p className={`text-[10px] uppercase tracking-widest font-mono mb-3 ${textMuted}`}>Assertions</p>
               <div className="grid grid-cols-2 gap-2">
                 {[
                   { label: "Hash Binding", icon: "🔒", value: "c2pa.hash.data" },
                   { label: "Actions", icon: "⚡", value: "c2pa.actions" },
-                  { label: "Claim Generator", icon: "🏭", value: "c2pa.claim_generator" },
                   { label: "Creative Work", icon: "🖼️", value: "schema-org.ImageObject" },
-                  { label: "Ingredient", icon: "🧬", value: "c2pa.ingredient" },
-                  { label: "Timestamp", icon: "⏰", value: "c2pa.timestamp" },
                   { label: "Consortium", icon: "🏢", value: "truststream.consortium" },
                 ].map(({ label, icon, value }) => (
                   <div
@@ -770,18 +768,18 @@ export default function ImageDetail() {
           <span className="text-2xl flex-shrink-0">🔒</span>
           <div className="space-y-1">
             <p className={`text-sm font-semibold ${isDark ? "text-amber-400" : "text-amber-700"}`}>
-              Blockchain Immutability
+              Ledger Immutability
             </p>
             <p className={`text-[11px] leading-relaxed ${isDark ? "text-amber-400/70" : "text-amber-600"}`}>
-              This image record is permanently written to Ethereum Sepolia. It cannot be deleted from the blockchain.
-              Only a status change (Revoke) is possible, which marks the record as revoked but keeps all data on-chain.
+              This image record is permanently written to the Hyperledger Fabric ledger. It cannot be deleted.
+              Only a status change (Revoke, or Disputed via tamper reports) is possible, which keeps all data on the ledger.
               The IPFS content and SHA-256 hash remain verifiable forever.
             </p>
           </div>
         </div>
 
         <p className={`text-center text-[9px] font-mono ${textMuted}`}>
-          TrustStream v1.0 · C2PA v2.2 · Ethereum Sepolia · Hyperledger Fabric · IPFS via Pinata
+          TrustStream v1.0 · C2PA v2.2 · Hyperledger Fabric · IPFS via Pinata
         </p>
       </div>
     </div>

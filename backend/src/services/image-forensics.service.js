@@ -410,6 +410,8 @@ const analyzeImageMetadata = ({ sourceInfo }) => {
 // ═════════════════════════════════════════════════════════
 
 const ELA_QUALITY = 75; // re-encode quality for ELA comparison
+const ELA_BLOCK_SIZE = 8;  // JPEG's own block size (Krawetz, 2007) -- see note below
+const ELA_MAX_DIM = 1200;  // cap raw-buffer extraction cost on very large images
 
 /**
  * Parse PSNR output from ffmpeg stderr.
@@ -421,6 +423,95 @@ const parsePsnr = (stderr) => {
   if (!match) return null;
   const val = match[1] === "inf" ? 999 : parseFloat(match[1]);
   return Number.isFinite(val) ? val : null;
+};
+
+// Decodes an image to a raw grayscale buffer at a bounded size, for
+// pixel-level comparison. Returns { buffer, width, height }.
+const decodeGrayRaw = async (imagePath) => {
+  const probe = await execFileAsync("ffprobe", [
+    "-v", "error", "-select_streams", "v:0",
+    "-show_entries", "stream=width,height", "-of", "json", imagePath,
+  ]).then(({ stdout }) => JSON.parse(stdout || "{}")).catch(() => ({}));
+
+  const srcW = probe.streams?.[0]?.width  || ELA_MAX_DIM;
+  const srcH = probe.streams?.[0]?.height || ELA_MAX_DIM;
+  const scale = Math.min(1, ELA_MAX_DIM / Math.max(srcW, srcH));
+  // Round down to a multiple of the block size so every block is full-size.
+  const width  = Math.max(ELA_BLOCK_SIZE, Math.floor((srcW * scale) / ELA_BLOCK_SIZE) * ELA_BLOCK_SIZE);
+  const height = Math.max(ELA_BLOCK_SIZE, Math.floor((srcH * scale) / ELA_BLOCK_SIZE) * ELA_BLOCK_SIZE);
+
+  const buffer = await ffmpegBufferLocal([
+    "-hide_banner", "-loglevel", "error", "-i", imagePath,
+    "-vf", `scale=${width}:${height}:force_original_aspect_ratio=disable,format=gray`,
+    "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1",
+  ]);
+
+  return { buffer, width, height };
+};
+
+const ffmpegBufferLocal = async (args) => {
+  const { stdout } = await execFileAsync("ffmpeg", args, { encoding: "buffer" });
+  return stdout;
+};
+
+// Classic block-level ELA (Krawetz, 2007, "A Picture's Worth: Digital Image
+// Analysis and Forensics"): JPEG compresses independent 8x8 blocks, so an
+// untouched image degrades at roughly the same rate across every block when
+// re-saved. A block that was pasted in from a different generation/quality
+// stands out with a distinctly different error level than its neighbors --
+// this is the actual mechanism ELA tools visualize as a "hot spot" map. The
+// previous implementation only computed one whole-image PSNR number, which
+// discards exactly the spatial information the technique depends on.
+const analyzeRegionalELA = async (originalPath, resavedPath) => {
+  const [original, resaved] = await Promise.all([
+    decodeGrayRaw(originalPath),
+    decodeGrayRaw(resavedPath),
+  ]);
+
+  if (original.width !== resaved.width || original.height !== resaved.height) {
+    return { regionalScore: 0, hotBlockRatio: 0, blockCount: 0, applicable: false };
+  }
+
+  const { buffer: bufA, width, height } = original;
+  const bufB = resaved.buffer;
+  const blocksX = width  / ELA_BLOCK_SIZE;
+  const blocksY = height / ELA_BLOCK_SIZE;
+  const blockErrors = new Array(blocksX * blocksY).fill(0);
+
+  for (let by = 0; by < blocksY; by++) {
+    for (let bx = 0; bx < blocksX; bx++) {
+      let sum = 0;
+      for (let y = 0; y < ELA_BLOCK_SIZE; y++) {
+        const rowStart = (by * ELA_BLOCK_SIZE + y) * width + bx * ELA_BLOCK_SIZE;
+        for (let x = 0; x < ELA_BLOCK_SIZE; x++) {
+          sum += Math.abs(bufA[rowStart + x] - bufB[rowStart + x]);
+        }
+      }
+      blockErrors[by * blocksX + bx] = sum / (ELA_BLOCK_SIZE * ELA_BLOCK_SIZE);
+    }
+  }
+
+  const sorted = [...blockErrors].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)] || 0;
+  // A block is "hot" if its error level is well outside the image's own
+  // typical error level -- the sign of a region compressed at a different
+  // generation than the rest of the image, not just generally noisy content.
+  const hotThreshold = median * 2.5 + 4; // +4 floor so near-zero-error images don't trip on noise
+  const hotBlocks = blockErrors.filter((e) => e > hotThreshold).length;
+  const hotBlockRatio = blockErrors.length ? hotBlocks / blockErrors.length : 0;
+
+  // A handful of hot blocks (a pasted logo, a small edited region) is the
+  // interesting case; if most of the image is "hot" that's just uniform
+  // high-frequency content, not a localized splice, so the score peaks at a
+  // moderate ratio and does not keep climbing.
+  const regionalScore = clamp(hotBlockRatio > 0 ? Math.min(hotBlockRatio * 6, 1) : 0);
+
+  return {
+    regionalScore: round(regionalScore),
+    hotBlockRatio: round(hotBlockRatio),
+    blockCount: blockErrors.length,
+    applicable: true,
+  };
 };
 
 const analyzeELA = async ({ imagePath, codec }) => {
@@ -486,13 +577,34 @@ const analyzeELA = async ({ imagePath, codec }) => {
       notes.push(`ELA: PSNR ${psnrDb.toFixed(1)} dB — typical first-generation capture`);
     }
 
+    // Step 3: Block-level (regional) ELA -- the whole-image PSNR above can
+    // only say "this image looks re-saved somewhere," not "this specific
+    // region was pasted in from elsewhere." A small localized splice can sit
+    // inside an otherwise first-generation image and barely move the global
+    // PSNR at all, so the regional signal is combined with (not replacing)
+    // the global one -- either being high is meaningful evidence.
+    const regional = await analyzeRegionalELA(imagePath, tmpPath).catch(() => ({
+      regionalScore: 0, hotBlockRatio: 0, blockCount: 0, applicable: false,
+    }));
+
+    if (regional.applicable && regional.hotBlockRatio > 0) {
+      notes.push(
+        `ELA (regional): ${Math.round(regional.hotBlockRatio * 100)}% of ${ELA_BLOCK_SIZE}x${ELA_BLOCK_SIZE} blocks show a` +
+        ` markedly different error level than the rest of the image — possible localized edit/splice`
+      );
+    }
+
+    const combinedElaScore = clamp(Math.max(elaScore, regional.regionalScore));
+
     return {
       module:   "ela",
-      elaScore: round(elaScore),
+      elaScore: round(combinedElaScore),
       metrics: {
         applicable: true,
-        psnrDb:     round(psnrDb, 2),
-        elaQuality: ELA_QUALITY,
+        psnrDb:         round(psnrDb, 2),
+        elaQuality:     ELA_QUALITY,
+        globalElaScore: round(elaScore),
+        regional,
       },
       notes,
     };

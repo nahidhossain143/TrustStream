@@ -60,18 +60,8 @@ function TimelineItem({ event, isDark, isLast }) {
         <div className={`mt-3 grid gap-2 text-[10px] font-mono ${isDark ? "text-neutral-500" : "text-neutral-500"}`}>
           <p>Action: {event.action}</p>
           <p>Org: {event.orgName || "Unknown"}</p>
-          <p>Actor: {event.actor || "Local catalog"}</p>
-          {event.segmentIndex !== undefined && event.segmentIndex !== null && <p>Segment: {event.segmentIndex}</p>}
-          {event.txHash && (
-            <a
-              href={event.etherscanUrl || `https://sepolia.etherscan.io/tx/${event.txHash}`}
-              target="_blank"
-              rel="noreferrer"
-              className="text-blue-400 hover:underline break-all"
-            >
-              TX: {event.txHash}
-            </a>
-          )}
+          <p>Actor: {event.actor || "TrustStream"}</p>
+          {event.txId && <p className="break-all">TX: {event.txId}</p>}
           {event.note && <p>{event.note}</p>}
         </div>
       </div>
@@ -158,7 +148,7 @@ export default function TimelinePage() {
           </p>
           <h1 className="text-2xl font-bold mt-2">{timeline.title || id}</h1>
           <p className={`text-sm mt-1 ${textMuted}`}>
-            {mediaKind.toUpperCase()} lifecycle reconstructed from blockchain logs and local provenance records.
+            {mediaKind.toUpperCase()} lifecycle reconstructed from the Fabric ledger's history and local provenance records.
           </p>
 
           <div className="flex flex-wrap gap-2 mt-4">
@@ -176,6 +166,11 @@ export default function TimelinePage() {
             {timeline.summary?.hasRevocation && (
               <span className="text-[10px] font-semibold rounded-full border px-2.5 py-1 border-red-500/30 text-red-400">
                 Revoked
+              </span>
+            )}
+            {timeline.summary?.hasDispute && (
+              <span className="text-[10px] font-semibold rounded-full border px-2.5 py-1 border-amber-500/30 text-amber-400">
+                Disputed
               </span>
             )}
           </div>

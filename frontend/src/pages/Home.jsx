@@ -120,10 +120,11 @@ function ImageLightbox({ item, onClose, isDark }) {
 // ─── Verification Pills ───────────────────────────────────
 function VerifPills({ item }) {
   const pills = [];
-  if (item.blockchainStatus === "ready") pills.push({ label: "⛓ On-chain", cls: "text-emerald-400 border-emerald-800/40 bg-emerald-950/30" });
+  if (item.fabricStatus === "ready") pills.push({ label: "🏛 Fabric", cls: "text-emerald-400 border-emerald-800/40 bg-emerald-950/30" });
   if (item.c2paStatus === "signed" || item.c2paSigned) pills.push({ label: "📋 C2PA", cls: "text-violet-400 border-violet-800/40 bg-violet-950/30" });
   if (item.ipfsStatus === "uploaded") pills.push({ label: "📌 IPFS", cls: "text-orange-400 border-orange-800/40 bg-orange-950/30" });
-  if (item.fullyEndorsed || item.endorsementCount >= 2) pills.push({ label: "✓ 3-Org", cls: "text-blue-400 border-blue-800/40 bg-blue-950/30" });
+  if (item.fabricResult?.status === "disputed") pills.push({ label: "⚠ Disputed", cls: "text-red-400 border-red-800/40 bg-red-950/30" });
+  else if (item.fabricStatus === "ready") pills.push({ label: "✓ 3-Org", cls: "text-blue-400 border-blue-800/40 bg-blue-950/30" });
   return (
     <div className="flex flex-wrap gap-1.5">
       {pills.map(({ label, cls }) => (
@@ -273,30 +274,55 @@ function ImagePostCard({ item, onOpen, isDark }) {
 }
 
 // ─── Main ─────────────────────────────────────────────────
+const STATUS_OPTIONS = [
+  { key: "all", label: "All Status" },
+  { key: "verified", label: "Verified" },
+  { key: "disputed", label: "Disputed" },
+  { key: "revoked", label: "Revoked" },
+];
+
 export default function Home() {
   const { isDark } = useTheme();
-  const [feedList, setFeedList] = useState([]);
+  const [items, setItems] = useState([]);
+  const [counts, setCounts] = useState({ all: 0, video: 0, image: 0 });
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState("all");
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [mediaType, setMediaType] = useState("all");
+  const [status, setStatus] = useState("all");
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
   const [playingItem, setPlayingItem] = useState(null);
   const [previewImage, setPreviewImage] = useState(null);
   const [page, setPage] = useState(1);
-  const ITEMS_PER_PAGE = 10;
+  const [hasMore, setHasMore] = useState(false);
 
-  const fetchFeed = useCallback(() =>
-    feedAPI.getFeed().then((res) => { setFeedList(res.data?.feed || res.data || []); }).catch(console.error), []);
+  // Debounce the search box so every keystroke doesn't fire a request.
+  useEffect(() => {
+    const t = setTimeout(() => setSearch(searchInput.trim()), 350);
+    return () => clearTimeout(t);
+  }, [searchInput]);
 
-  useEffect(() => { fetchFeed().finally(() => setLoading(false)); }, [fetchFeed]);
+  const fetchPage = useCallback((pageNum, { append } = {}) => {
+    const setBusy = append ? setLoadingMore : setLoading;
+    setBusy(true);
+    return feedAPI
+      .getFeed({ search, mediaType, status, page: pageNum, limit: 10 })
+      .then((res) => {
+        const data = res.data || {};
+        setItems((prev) => (append ? [...prev, ...(data.feed || [])] : data.feed || []));
+        setCounts(data.counts || { all: 0, video: 0, image: 0 });
+        setHasMore(Boolean(data.hasMore));
+        setPage(pageNum);
+      })
+      .catch(console.error)
+      .finally(() => setBusy(false));
+  }, [search, mediaType, status]);
 
-  const filteredFeed = feedList.filter((item) => {
-    if (filter === "video") return item.mediaType === "video";
-    if (filter === "image") return item.mediaType === "image";
-    return true;
-  });
-  const paginatedFeed = filteredFeed.slice(0, page * ITEMS_PER_PAGE);
-  const hasMore = paginatedFeed.length < filteredFeed.length;
-  const videoCount = feedList.filter((i) => i.mediaType === "video").length;
-  const imageCount = feedList.filter((i) => i.mediaType === "image").length;
+  // Any filter/search change resets back to page 1.
+  useEffect(() => { fetchPage(1); }, [fetchPage]);
+
+  const videoCount = counts.video;
+  const imageCount = counts.image;
 
   const bg = isDark ? "bg-[#080808]" : "bg-neutral-100";
   const text = isDark ? "text-white" : "text-neutral-900";
@@ -332,39 +358,67 @@ export default function Home() {
       {previewImage && <ImageLightbox item={previewImage} onClose={() => setPreviewImage(null)} isDark={isDark} />}
 
       <div className="max-w-3xl mx-auto px-4 py-6 space-y-4">
+        {/* Search bar */}
+        <div className={`rounded-2xl border px-4 py-3 flex items-center gap-2.5 ${isDark ? "bg-neutral-900 border-neutral-800" : "bg-white border-neutral-200"}`}>
+          <svg className={`w-4 h-4 flex-shrink-0 ${textMuted}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z" />
+          </svg>
+          <input
+            type="text"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            placeholder="Search by title or description…"
+            className={`flex-1 bg-transparent outline-none text-sm ${text} placeholder:${textMuted}`}
+          />
+          {searchInput && (
+            <button onClick={() => setSearchInput("")} className={`text-xs ${textMuted} hover:text-red-400`}>✕</button>
+          )}
+        </div>
+
         {/* Filter bar */}
-        <div className={`rounded-2xl border px-5 py-3 flex items-center gap-3 ${isDark ? "bg-neutral-900 border-neutral-800" : "bg-white border-neutral-200"}`}>
+        <div className={`rounded-2xl border px-5 py-3 flex flex-wrap items-center gap-3 ${isDark ? "bg-neutral-900 border-neutral-800" : "bg-white border-neutral-200"}`}>
           <div className="flex items-center gap-1.5">
             <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse shadow-[0_0_6px_#ef4444]" />
             <span className={`text-[10px] font-bold uppercase tracking-widest ${textMuted}`}>Live Feed</span>
           </div>
-          <div className={`flex gap-1 rounded-lg p-0.5 flex-1 max-w-[280px] ${isDark ? "bg-neutral-800" : "bg-neutral-100"}`}>
+          <div className={`flex gap-1 rounded-lg p-0.5 flex-1 min-w-[220px] max-w-[280px] ${isDark ? "bg-neutral-800" : "bg-neutral-100"}`}>
             {[
-              { key: "all", label: `All (${feedList.length})` },
+              { key: "all", label: `All (${counts.all})` },
               { key: "video", label: `Video (${videoCount})` },
               { key: "image", label: `Image (${imageCount})` },
             ].map(({ key, label }) => (
-              <button key={key} onClick={() => { setFilter(key); setPage(1); }}
-                className={`flex-1 text-[10px] font-mono py-1.5 rounded-md transition-all ${filter === key ? (isDark ? "bg-white/10 text-white" : "bg-white text-neutral-900 shadow-sm") : textMuted}`}>
+              <button key={key} onClick={() => setMediaType(key)}
+                className={`flex-1 text-[10px] font-mono py-1.5 rounded-md transition-all ${mediaType === key ? (isDark ? "bg-white/10 text-white" : "bg-white text-neutral-900 shadow-sm") : textMuted}`}>
                 {label}
               </button>
             ))}
           </div>
+          <select
+            value={status}
+            onChange={(e) => setStatus(e.target.value)}
+            className={`text-[10px] font-mono rounded-lg px-2.5 py-1.5 border outline-none ${isDark ? "bg-neutral-800 border-neutral-700 text-neutral-300" : "bg-neutral-100 border-neutral-200 text-neutral-700"}`}
+          >
+            {STATUS_OPTIONS.map(({ key, label }) => (
+              <option key={key} value={key}>{label}</option>
+            ))}
+          </select>
         </div>
 
         {/* Empty */}
-        {filteredFeed.length === 0 && (
+        {!loading && items.length === 0 && (
           <div className={`rounded-2xl border p-12 text-center space-y-4 ${isDark ? "bg-neutral-900 border-neutral-800" : "bg-white border-neutral-200"}`}>
             <div className={`w-16 h-16 rounded-2xl border flex items-center justify-center text-3xl mx-auto ${isDark ? "bg-neutral-800 border-neutral-700" : "bg-neutral-100 border-neutral-200"}`}>📡</div>
             <div>
-              <p className={`font-semibold ${text}`}>No content yet</p>
-              <p className={`text-sm mt-1 ${textMuted}`}>Sync from blockchain or check back later</p>
+              <p className={`font-semibold ${text}`}>No content found</p>
+              <p className={`text-sm mt-1 ${textMuted}`}>
+                {search || mediaType !== "all" || status !== "all" ? "Try a different search or filter" : "Sync from blockchain or check back later"}
+              </p>
             </div>
           </div>
         )}
 
         {/* Cards */}
-        {paginatedFeed.map((item) => {
+        {items.map((item) => {
           const key = item.videoId || item.imageId || item.id;
           return item.mediaType === "image"
             ? <ImagePostCard key={key} item={item} onOpen={setPreviewImage} isDark={isDark} />
@@ -372,9 +426,9 @@ export default function Home() {
         })}
 
         {hasMore && (
-          <button onClick={() => setPage(p => p + 1)}
-            className={`w-full py-3 rounded-2xl border text-sm font-semibold transition-all ${isDark ? "bg-neutral-900 border-neutral-800 text-neutral-400 hover:text-white" : "bg-white border-neutral-200 text-neutral-500 hover:text-neutral-900"}`}>
-            Load more
+          <button onClick={() => fetchPage(page + 1, { append: true })} disabled={loadingMore}
+            className={`w-full py-3 rounded-2xl border text-sm font-semibold transition-all disabled:opacity-50 ${isDark ? "bg-neutral-900 border-neutral-800 text-neutral-400 hover:text-white" : "bg-white border-neutral-200 text-neutral-500 hover:text-neutral-900"}`}>
+            {loadingMore ? "Loading…" : "Load more"}
           </button>
         )}
       </div>

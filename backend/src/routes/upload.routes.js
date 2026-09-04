@@ -22,6 +22,7 @@
 
 const express = require("express");
 const multer = require("multer");
+const rateLimit = require("express-rate-limit");
 const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
@@ -41,30 +42,13 @@ const imageCatalogDir = path.join(storageRoot, "data/catalog/images");
 
 // --- Service Imports ---------------------------------------------
 const {
-  registerVideoOnChain,
-  registerAndEndorseBatch,
-  verifyOnChain,
-  getEndorsementsFromChain,
-  getTxLogsFromChain,
-  getVideoFromChain,
-  getTxReceipt,
-  getNetworkStatus,
-  getWalletBalances,
-  reportTamperOnChain,
-  registerAndEndorseImage,
-  getImageFromChain,
-  getImageEndorsementsFromChain,
-  reportImageTamperOnChain,
-  revokeVideoOnChain,
-  revokeImageOnChain,
-} = require("../services/blockchain.service");
-
-const {
   registerVideoProof,
   registerImageProof,
   verifyVideoProof,
   verifyImageProof,
   revokeMediaProof,
+  reportTamper,
+  clearDispute,
   getMediaHistory,
   queryLedger,
   fabricEvents,
@@ -77,9 +61,10 @@ const {
   uploadJsonToIPFS,
   uploadImageToIPFS,
   uploadImageMetadataToIPFS,
-  uploadImageC2paToIPFS,
+  uploadVideoSourceToIPFS,
   buildGatewayUrl,
   fetchJsonFromIPFS,
+  fetchBufferFromIPFS,
 } = require("../services/ipfs.service");
 
 const {
@@ -93,9 +78,9 @@ const {
   generateAllManifests,
   readAndVerifyManifest,
   buildVideoManifest,
-  generateImageManifest,
-  readAndVerifyImageManifest,
-  verifyImageManifestObject,
+  embedImageManifest,
+  embedVideoManifest,
+  verifyEmbeddedAsset,
 } = require("../services/c2pa.service");
 
 const { analyzeVideoForensics } = require("../services/forensics.service");
@@ -103,6 +88,66 @@ const { analyzeImageForensics } = require("../services/image-forensics.service")
 const { buildRevocationTimeline } = require("../services/timeline.service");
 
 const router = express.Router();
+
+// --- Rate Limiting -------------------------------------------------
+// General ceiling on the whole API surface (feed polling, detail pages,
+// per-segment verify calls during playback all add up - generous but
+// bounded). A tighter limit specifically on the two upload endpoints,
+// since those are the expensive/abusable ones (FFmpeg, forensics, IPFS
+// pinning, Fabric writes all get triggered per call).
+const generalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 600,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const uploadLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many uploads from this IP - try again later." },
+});
+
+// Public, unauthenticated verify-by-upload endpoint - tighter than the
+// admin upload limiter since anyone on the internet can hit it.
+const publicVerifyLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 15,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many verification requests - try again in a few minutes." },
+});
+
+router.use(generalLimiter);
+
+// --- ID Param Validation --------------------------------------------
+// videoId/imageId are crypto.randomUUID() strings; every lookup builds a
+// filesystem path from them (data/catalog/<id>.json). Without validation
+// here, a crafted id containing "../" segments could read arbitrary
+// .json files outside the catalog directory. Centralized via
+// router.param() so it applies to every route using these names, not
+// just the ones touched in this pass.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const validateIdParam = (req, res, next, value) => {
+  if (!UUID_RE.test(value)) return res.status(400).json({ error: "Invalid id format" });
+  next();
+};
+router.param("videoId", validateIdParam);
+router.param("imageId", validateIdParam);
+router.param("id", validateIdParam);
+
+router.param("segmentIndex", (req, res, next, value) => {
+  if (!/^\d+$/.test(value)) return res.status(400).json({ error: "Invalid segmentIndex" });
+  next();
+});
+
+router.param("kind", (req, res, next, value) => {
+  if (value !== "video" && value !== "image") return res.status(400).json({ error: "Invalid kind" });
+  next();
+});
 
 // --- Multer Configs ----------------------------------------------
 // Video uploads: accepts both `video` (mp4) and optional `thumbnail` (image)
@@ -129,6 +174,30 @@ const imageUpload = multer({
     }
   },
   limits: { fileSize: 20 * 1024 * 1024 },
+});
+
+// Public verify-by-upload: any image or MP4, capped smaller than the
+// authenticated upload limits since this is unauthenticated and
+// abuse-prone (repeated large uploads just to run a lookup).
+const verifyUpload = multer({
+  dest: uploadsDir,
+  fileFilter: (_req, file, cb) => {
+    // .ts HLS segments have no reliable standard MIME type across
+    // browsers/tools (video/mp2t, video/mp2ts, application/octet-stream
+    // are all seen in the wild) - allowed here so someone verifying a
+    // raw downloaded segment still reaches the hash-fallback check,
+    // even though it can never carry an embedded C2PA manifest itself.
+    const allowed = [
+      "image/jpeg", "image/jpg", "image/png", "image/webp",
+      "video/mp4", "video/mp2t", "video/mp2ts", "application/octet-stream",
+    ];
+    if (allowed.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error("Unsupported file type for verification"));
+    }
+  },
+  limits: { fileSize: 100 * 1024 * 1024 },
 });
 
 // =================================================================
@@ -179,6 +248,20 @@ const listImageManifests = () => {
 //  COMMON HELPERS
 // =================================================================
 
+// Reject obviously-abusive metadata (huge titles/descriptions bloat the
+// catalog and the C2PA CreativeWork assertion embedded in every asset).
+// Trims whitespace; rejects empty titles and anything over a sane cap.
+const TITLE_MAX = 200;
+const DESCRIPTION_MAX = 5000;
+const validateMeta = (rawTitle, rawDescription, fallbackTitle) => {
+  const title = (rawTitle || fallbackTitle || "").trim();
+  const description = (rawDescription || "").trim();
+  if (!title) return { error: "Title is required" };
+  if (title.length > TITLE_MAX) return { error: `Title must be ${TITLE_MAX} characters or fewer` };
+  if (description.length > DESCRIPTION_MAX) return { error: `Description must be ${DESCRIPTION_MAX} characters or fewer` };
+  return { title, description };
+};
+
 const hashFile = (filePath) =>
   new Promise((resolve, reject) => {
     const hash = crypto.createHash("sha256");
@@ -215,9 +298,6 @@ const buildMetadataPayload = (manifest) => ({
     c2paManifestHash: segment.c2paManifestHash || null,
     c2paInstanceId: segment.c2paInstanceId || null,
     c2paSignedAt: segment.c2paSignedAt || null,
-    txHash: segment.txHash || null,
-    blockNumber: segment.blockNumber || null,
-    gasUsed: segment.totalGasUsed || null,
   })),
 });
 
@@ -237,14 +317,16 @@ const buildVideoSummary = (manifest) => ({
   thumbnailUrl: manifest.thumbnailUrl || null,
   status: manifest.status,
   ipfsStatus: manifest.ipfsStatus,
-  blockchainStatus: manifest.blockchainStatus,
   fabricStatus: manifest.fabricStatus || "pending",
   fabricResult: manifest.fabricResult || null,
   fabricError: manifest.fabricError || null,
   c2paStatus: manifest.c2paStatus || "pending",
-  videoTxHash: manifest.videoTxHash || null,
-  videoBlockNumber: manifest.videoBlockNumber || null,
-  totalGasUsed: manifest.totalGasUsed || null,
+  sourceC2paStatus: manifest.sourceC2paStatus || "pending",
+  sourceC2paManifestHash: manifest.sourceC2paManifestHash || null,
+  sourceC2paInstanceId: manifest.sourceC2paInstanceId || null,
+  sourceC2paSignedAt: manifest.sourceC2paSignedAt || null,
+  sourceIpfsCid: manifest.sourceIpfsCid || null,
+  sourceIpfsUrl: manifest.sourceIpfsUrl || null,
 });
 
 const buildForensicSummary = (manifest) => ({
@@ -399,20 +481,13 @@ const buildImageSummary = (manifest) => ({
   c2paSignedAt: manifest.c2paSignedAt || null,
   c2paSigned: manifest.c2paSigned || false,
   c2paStatus: manifest.c2paStatus || "pending",
-  c2paSidecarCid: manifest.c2paSidecarCid || null,
-  c2paSidecarUrl: manifest.c2paSidecarUrl || null,
-  endorsementCount: manifest.endorsementCount || 0,
-  fullyEndorsed: manifest.fullyEndorsed || false,
-  blockchainStatus: manifest.blockchainStatus,
+  c2paEmbedded: true,
   fabricStatus: manifest.fabricStatus || "pending",
   fabricResult: manifest.fabricResult || null,
   fabricError: manifest.fabricError || null,
   fabricCompletedAt: manifest.fabricCompletedAt || null,
   ipfsStatus: manifest.ipfsStatus,
   status: manifest.status,
-  txHash: manifest.txHash || null,
-  blockNumber: manifest.blockNumber || null,
-  totalGasUsed: manifest.totalGasUsed || null,
   createdAt: manifest.createdAt,
   registeredAt: manifest.createdAt,
   ...buildImageForensicSummary(manifest),
@@ -431,7 +506,6 @@ const buildImageMetadataPayload = (manifest) => {
     createdAt: manifest.createdAt,
     c2paManifestHash: manifest.c2paManifestHash || null,
     c2paInstanceId: manifest.c2paInstanceId || null,
-    c2paSidecarCid: manifest.c2paSidecarCid || null,
   };
   if (manifest.forensics) {
     payload.forensics = {
@@ -532,11 +606,30 @@ const syncVideoToIpfsAndChain = async (videoId) => {
   manifest = readManifest(videoId);
   if (!manifest) return;
 
+  // Pin the C2PA-embedded source MP4 (the video-level "source of
+  // record") to IPFS, then drop the local copy - same pattern as
+  // segments and images. A failed embed upstream just means there's
+  // nothing to pin here; the HLS/segment pipeline is unaffected.
+  if (manifest.sourceC2paPath && !manifest.sourceIpfsCid) {
+    try {
+      const sourceIpfsCid = await uploadVideoSourceToIPFS(manifest.sourceC2paPath, `${videoId}_source.mp4`);
+      const sourceIpfsUrl = buildGatewayUrl(sourceIpfsCid);
+      updateManifest(videoId, (cur) => ({ ...cur, sourceIpfsCid, sourceIpfsUrl }));
+    } catch (err) {
+      console.error(`[upload] source MP4 IPFS pin failed for ${videoId}: ${err.message}`);
+    } finally {
+      fs.unlink(manifest.sourceC2paPath, () => {});
+    }
+  }
+
+  manifest = readManifest(videoId);
+  if (!manifest) return;
+
   if (manifest.segments.some((s) => !s.ipfsCid)) {
     updateManifest(videoId, (cur) => ({
       ...cur,
       ipfsStatus: "partial",
-      blockchainStatus: "skipped",
+      fabricStatus: "skipped",
       backgroundError: "Some segments failed to upload to IPFS",
     }));
     return;
@@ -559,7 +652,6 @@ const syncVideoToIpfsAndChain = async (videoId) => {
   if (!metadataCid) {
     updateManifest(videoId, (cur) => ({
       ...cur,
-      blockchainStatus: "skipped",
       fabricStatus: "skipped",
       backgroundError: "Metadata upload to IPFS failed",
     }));
@@ -605,95 +697,20 @@ const syncVideoToIpfsAndChain = async (videoId) => {
     }));
   }
 
-  updateManifest(videoId, (cur) => ({ ...cur, blockchainStatus: "registering" }));
-
   manifest = readManifest(videoId);
   if (!manifest) return;
 
-  const registerVideoResult = await registerVideoOnChain(
-    manifest.videoId,
-    manifest.title,
-    metadataCid,
-    manifest.totalSegments
-  );
-
-  if (!registerVideoResult?.ok) {
-    updateManifest(videoId, (cur) => ({
-      ...cur,
-      blockchainStatus: registerVideoResult?.skipped ? "skipped" : "degraded",
-      backgroundError: registerVideoResult?.error || null,
-    }));
-    return;
-  }
-
-  const videoTxReceipt = registerVideoResult.txReceipt;
-  updateManifest(videoId, (cur) => ({
-    ...cur,
-    videoTxHash: videoTxReceipt?.txHash || null,
-    videoBlockNumber: videoTxReceipt?.blockNumber || null,
-    videoTxEtherscan: videoTxReceipt?.etherscanUrl || null,
-    videoTxGasUsed: videoTxReceipt?.gasUsed || null,
-  }));
-
-  const batchResults = await registerAndEndorseBatch(
-    manifest.videoId,
-    manifest.segments.map((seg) => ({
-      index: seg.index,
-      sha256Hash: seg.sha256Hash,
-      chainHash: seg.chainHash,
-      ipfsCid: seg.ipfsCid,
-      c2paManifestHash: seg.c2paManifestHash || "",
-      c2paInstanceId: seg.c2paInstanceId || "",
-    }))
-  );
-
-  let totalGasUsed = videoTxReceipt?.gasUsed || 0;
-
-  updateManifest(videoId, (cur) => ({
-    ...cur,
-    segments: cur.segments.map((item) => {
-      const result = batchResults.find((e) => e.index === item.index);
-      if (!result) return item;
-      totalGasUsed += result.totalGasUsed || 0;
-      return {
-        ...item,
-        blockchainRegistered: Boolean(result.ok),
-        endorsementCount: result.endorsementCount || 0,
-        fullyEndorsed: Boolean(result.fullyEndorsed),
-        blockchainError: result.ok ? null : result.error || null,
-        txHash: result.txReceipts?.register?.txHash || null,
-        txHashBroadcaster: result.txReceipts?.broadcaster?.txHash || null,
-        txHashAuditor: result.txReceipts?.auditor?.txHash || null,
-        blockNumber: result.blockNumber || null,
-        gasUsedRegister: result.txReceipts?.register?.gasUsed || null,
-        gasUsedBroadcaster: result.txReceipts?.broadcaster?.gasUsed || null,
-        gasUsedAuditor: result.txReceipts?.auditor?.gasUsed || null,
-        totalGasUsed: result.totalGasUsed || null,
-        etherscanRegister: result.txReceipts?.register?.etherscanUrl || null,
-        etherscanBroadcaster: result.txReceipts?.broadcaster?.etherscanUrl || null,
-        etherscanAuditor: result.txReceipts?.auditor?.etherscanUrl || null,
-      };
-    }),
-  }));
-
-  manifest = readManifest(videoId);
-  if (!manifest) return;
-
-  const hasChainFailures = manifest.segments.some(
-    (s) => s.blockchainRegistered === false
-  );
+  const fabricFailed = manifest.fabricStatus === "degraded";
 
   updateManifest(videoId, (cur) => ({
     ...cur,
     status: "ready",
-    blockchainStatus: hasChainFailures ? "degraded" : "ready",
-    totalGasUsed,
-    backgroundError: hasChainFailures
-      ? "Some segments were not registered on-chain"
+    backgroundError: fabricFailed
+      ? "Fabric ledger registration failed"
       : null,
   }));
 
-  console.log(`[upload] video ${videoId} pipeline complete (gas=${totalGasUsed})`);
+  console.log(`[upload] video ${videoId} pipeline complete (fabricStatus=${manifest.fabricStatus})`);
 };
 
 // =================================================================
@@ -706,44 +723,58 @@ const syncVideoToIpfsAndChain = async (videoId) => {
 //  pinned. This satisfies the thesis claim that "image content lives
 //  only on the decentralized network, no central server holds it".
 //
-//  Caller must pass `tempPath` (multer's req.file.path) and ideally
-//  `fileSize` so C2PA can record the size before the file is deleted.
+//  Caller must pass `tempPath` (multer's req.file.path).
 //
 const syncImageToIpfsAndChain = async (imageId, opts = {}) => {
-  const { tempPath, fileSize } = opts;
+  const { tempPath } = opts;
 
   let manifest = readImageManifest(imageId);
   if (!manifest) return;
 
-  // Step 1: Generate C2PA manifest in-memory (no disk write).
-  console.log(`[upload-image] generating C2PA manifest for ${imageId}...`);
+  // Step 1: Embed a real, ES256-signed C2PA manifest directly into the
+  // image bytes (JUMBF), overwriting tempPath in place. The signed
+  // bytes - not the original upload - are what get pinned to IPFS, so
+  // the canonical decentralized copy is itself the provenance record.
+  console.log(`[upload-image] embedding C2PA manifest for ${imageId}...`);
   updateImageManifest(imageId, (cur) => ({ ...cur, c2paStatus: "signing" }));
 
-  const c2paResult = await generateImageManifest({
-    imageId,
-    filename: manifest.filename,
-    localPath: tempPath || null,        // used only to read fileSize
-    fileSize: fileSize ?? null,
-    sha256Hash: manifest.sha256Hash,
-    ipfsCid: null,                      // image not yet pinned
-    title: manifest.title,
-    description: manifest.description,
-    createdAt: manifest.createdAt,
-    originalFilename: manifest.originalFilename,
-    mimeType: manifest.mimeType,
-  });
+  let c2paResult = { ok: false, error: "no temp path supplied" };
+  if (tempPath) {
+    try {
+      const imageBuffer = fs.readFileSync(tempPath);
+      c2paResult = await embedImageManifest({
+        imageId,
+        imageBuffer,
+        mimeType: manifest.mimeType,
+        title: manifest.title,
+        description: manifest.description,
+        createdAt: manifest.createdAt,
+      });
+      if (c2paResult.ok) fs.writeFileSync(tempPath, c2paResult.signedBuffer);
+    } catch (err) {
+      c2paResult = { ok: false, error: err.message };
+    }
+  }
+
+  // The pinned/canonical bytes are now the C2PA-embedded ones (if
+  // embedding succeeded), not the original upload - recompute the hash
+  // that goes on the Fabric ledger so it matches what IPFS actually
+  // serves. Otherwise a client hashing the downloaded file would never
+  // match the on-chain record.
+  const canonicalSha256Hash = c2paResult.ok ? await hashFile(tempPath) : manifest.sha256Hash;
 
   updateImageManifest(imageId, (cur) => ({
     ...cur,
+    sha256Hash: canonicalSha256Hash,
     c2paSigned: Boolean(c2paResult.ok),
     c2paStatus: c2paResult.ok ? "signed" : "failed",
     c2paManifestHash: c2paResult.manifestHash || null,
     c2paInstanceId: c2paResult.instanceId || null,
     c2paSignedAt: c2paResult.signedAt || null,
-    c2paSidecarPath: null,              // never written to disk
+    c2paError: c2paResult.ok ? null : c2paResult.error,
   }));
 
-  // Step 2: Upload image bytes to IPFS (from temp path).
+  // Step 2: Upload the C2PA-embedded image bytes to IPFS (from temp path).
   console.log(`[upload-image] pinning ${imageId} to IPFS...`);
   updateImageManifest(imageId, (cur) => ({ ...cur, ipfsStatus: "uploading" }));
 
@@ -769,7 +800,7 @@ const syncImageToIpfsAndChain = async (imageId, opts = {}) => {
   if (!ipfsCid) {
     updateImageManifest(imageId, (cur) => ({
       ...cur,
-      blockchainStatus: "skipped",
+      fabricStatus: "skipped",
       backgroundError: "Image upload to IPFS failed",
     }));
     // Pipeline aborts here - still clean up temp file so we don't leak.
@@ -777,28 +808,11 @@ const syncImageToIpfsAndChain = async (imageId, opts = {}) => {
     return;
   }
 
-  // Step 3: Pin C2PA sidecar JSON to IPFS so verification can fetch it
-  // without any local file. CID stored in manifest for later lookup.
-  let c2paSidecarCid = null;
-  if (c2paResult.ok && c2paResult.signedManifest) {
-    try {
-      c2paSidecarCid = await uploadImageC2paToIPFS(c2paResult.signedManifest, imageId);
-    } catch (err) {
-      console.error(`[upload-image] C2PA sidecar pin failed: ${err.message}`);
-    }
-  }
-  const c2paSidecarUrl = buildGatewayUrl(c2paSidecarCid);
-  updateImageManifest(imageId, (cur) => ({
-    ...cur,
-    c2paSidecarCid,
-    c2paSidecarUrl,
-  }));
-
-  // Step 4: Upload metadata JSON to IPFS (includes forensic summary +
-  // sidecar CID so a single fetch reaches everything else).
+  // Step 3: Upload metadata JSON to IPFS (includes forensic summary).
+  // No separate C2PA sidecar to pin anymore - the manifest is embedded
+  // directly in the image bytes already pinned at `ipfsCid` above.
   manifest = readImageManifest(imageId);
   const metadataPayload = buildImageMetadataPayload({ ...manifest, ipfsCid });
-  if (c2paSidecarCid) metadataPayload.c2paSidecarCid = c2paSidecarCid;
 
   const metadataCid = await uploadImageMetadataToIPFS(metadataPayload);
   const metadataUrl = buildGatewayUrl(metadataCid);
@@ -847,48 +861,19 @@ const syncImageToIpfsAndChain = async (imageId, opts = {}) => {
     }));
   }
 
-  // Step 6: Register on blockchain + 2 endorsements (3-org consortium).
-  console.log(`[upload-image] registering ${imageId} on blockchain...`);
-  updateImageManifest(imageId, (cur) => ({ ...cur, blockchainStatus: "registering" }));
-
   manifest = readImageManifest(imageId);
-
-  const chainResult = await registerAndEndorseImage(
-    imageId,
-    manifest.title,
-    manifest.description,
-    manifest.sha256Hash,
-    ipfsCid,
-    metadataCid || "",
-    manifest.c2paManifestHash || "",
-    manifest.c2paInstanceId || ""
-  );
-
-  const txRegister = chainResult.txReceipts?.register;
-  const txBroadcaster = chainResult.txReceipts?.broadcaster;
-  const txAuditor = chainResult.txReceipts?.auditor;
 
   updateImageManifest(imageId, (cur) => ({
     ...cur,
     status: "ready",
-    blockchainStatus: chainResult.ok ? "ready" : "degraded",
-    blockchainError: chainResult.ok ? null : chainResult.error,
-    endorsementCount: chainResult.endorsementCount || 0,
-    fullyEndorsed: chainResult.fullyEndorsed || false,
-    txHash: txRegister?.txHash || null,
-    txHashBroadcaster: txBroadcaster?.txHash || null,
-    txHashAuditor: txAuditor?.txHash || null,
-    blockNumber: chainResult.blockNumber || null,
-    totalGasUsed: chainResult.totalGasUsed || null,
-    etherscanRegister: txRegister?.etherscanUrl || null,
-    etherscanBroadcaster: txBroadcaster?.etherscanUrl || null,
-    etherscanAuditor: txAuditor?.etherscanUrl || null,
-    backgroundError: chainResult.ok ? null : chainResult.error,
+    backgroundError: manifest.fabricStatus === "degraded"
+      ? "Fabric ledger registration failed"
+      : null,
   }));
 
   // Step 6: Always delete the temp file. IPFS-only mode is the only mode
   // for images now - the env flag is gone, the local copy is gone, the
-  // canonical bytes live on IPFS (CID-addressed) and Ethereum (hash anchor).
+  // canonical bytes live on IPFS (CID-addressed) and the Fabric ledger (hash anchor).
   safeUnlink(tempPath);
   updateImageManifest(imageId, (cur) => ({
     ...cur,
@@ -896,9 +881,7 @@ const syncImageToIpfsAndChain = async (imageId, opts = {}) => {
     localImageDeletedAt: new Date().toISOString(),
   }));
 
-  console.log(
-    `[upload-image] ${imageId} pipeline complete (gas=${chainResult.totalGasUsed || 0}, ipfs-only)`
-  );
+  console.log(`[upload-image] ${imageId} pipeline complete (fabricStatus=${manifest.fabricStatus}, ipfs-only)`);
 };
 
 // Best-effort unlink that never throws and logs at info level if the
@@ -920,15 +903,20 @@ const safeUnlink = (filePath) => {
 //  VIDEO ROUTES
 // =================================================================
 
-router.post("/", videoUpload, async (req, res) => {
+router.post("/", uploadLimiter, videoUpload, async (req, res) => {
   const videoFile = req.files?.video?.[0];
   const thumbnailFile = req.files?.thumbnail?.[0];
 
   if (!videoFile) return res.status(400).json({ error: "Video file is required" });
 
   const inputPath = videoFile.path;
-  const title = req.body.title || videoFile.originalname;
-  const description = req.body.description || "";
+  const meta = validateMeta(req.body.title, req.body.description, videoFile.originalname);
+  if (meta.error) {
+    fs.unlink(inputPath, () => {});
+    if (thumbnailFile) fs.unlink(thumbnailFile.path, () => {});
+    return res.status(400).json({ error: meta.error });
+  }
+  const { title, description } = meta;
   const videoId = crypto.randomUUID();
   const outputFolder = path.join(streamsDir, videoId);
 
@@ -983,12 +971,8 @@ router.post("/", videoUpload, async (req, res) => {
       segments.push({
         index: i, filename, localPath, sha256Hash, chainHash,
         durationSeconds: 2, ipfsCid: null, ipfsUrl: null,
-        blockchainRegistered: false, endorsementCount: 0, fullyEndorsed: false,
         c2paSigned: false, c2paManifestHash: null, c2paInstanceId: null,
         c2paSignedAt: null, c2paSidecarPath: null,
-        txHash: null, txHashBroadcaster: null, txHashAuditor: null,
-        blockNumber: null, totalGasUsed: null,
-        etherscanRegister: null, etherscanBroadcaster: null, etherscanAuditor: null,
       });
       prevHash = sha256Hash;
     }
@@ -1007,25 +991,52 @@ router.post("/", videoUpload, async (req, res) => {
       console.error("[upload] forensic analysis error:", forensicErr.message);
     }
 
+    const createdAt = new Date().toISOString();
+
+    // Embed a real, ES256-signed C2PA manifest directly into the
+    // original MP4 (a genuinely C2PA-embeddable container, unlike the
+    // .ts segments FFmpeg is about to produce from it). The signed copy
+    // is written into the video's own stream folder and pinned to IPFS
+    // by the background pipeline as the video's "source of record".
+    let sourceC2paResult = { ok: false, error: "not attempted" };
+    let sourceC2paPath = null;
+    try {
+      const videoBuffer = fs.readFileSync(inputPath);
+      sourceC2paResult = await embedVideoManifest({ videoId, videoBuffer, title, description, createdAt });
+      if (sourceC2paResult.ok) {
+        sourceC2paPath = path.join(outputFolder, "source.c2pa.mp4");
+        fs.writeFileSync(sourceC2paPath, sourceC2paResult.signedBuffer);
+      }
+    } catch (err) {
+      sourceC2paResult = { ok: false, error: err.message };
+    }
+    if (!sourceC2paResult.ok) {
+      console.error(`[upload] source MP4 C2PA embed failed for ${videoId}: ${sourceC2paResult.error}`);
+    }
+
     const manifest = writeManifest(videoId, {
       kind: "video",
       videoId, title, description,
-      createdAt: new Date().toISOString(),
+      createdAt,
       totalSegments: segments.length,
       playlistUrl: `/streams/${videoId}/playlist.m3u8`,
       thumbnailUrl,
       metadataCid: null, metadataUrl: null,
       merkleRoot: null,
       status: "ready", ipfsStatus: "pending",
-      blockchainStatus: "pending",
       fabricStatus: "pending",
       fabricResult: null,
       fabricError: null,
       fabricCompletedAt: null,
       c2paStatus: "pending",
+      sourceC2paPath,
+      sourceC2paStatus: sourceC2paResult.ok ? "signed" : "failed",
+      sourceC2paManifestHash: sourceC2paResult.manifestHash || null,
+      sourceC2paInstanceId: sourceC2paResult.instanceId || null,
+      sourceC2paSignedAt: sourceC2paResult.signedAt || null,
+      sourceC2paError: sourceC2paResult.ok ? null : sourceC2paResult.error,
+      sourceIpfsCid: null, sourceIpfsUrl: null,
       backgroundError: null,
-      videoTxHash: null, videoBlockNumber: null,
-      videoTxEtherscan: null, totalGasUsed: null,
       forensicStatus, forensicError, forensics: forensicReport,
       forensicReportCid: null, forensicReportUrl: null,
       segments,
@@ -1044,7 +1055,7 @@ router.post("/", videoUpload, async (req, res) => {
       updateManifest(videoId, (cur) => ({
         ...cur,
         ipfsStatus: cur.ipfsStatus === "uploaded" ? cur.ipfsStatus : "partial",
-        blockchainStatus: cur.blockchainStatus === "ready" ? cur.blockchainStatus : "degraded",
+        fabricStatus: cur.fabricStatus === "ready" ? cur.fabricStatus : "degraded",
         backgroundError: err.message,
       }));
     });
@@ -1092,19 +1103,10 @@ router.get("/videos/:videoId/segments", async (req, res) => {
     chainHash: seg.chainHash,
     ipfsCid: seg.ipfsCid,
     gatewayUrl: seg.ipfsUrl,
-    endorsementCount: seg.endorsementCount,
-    fullyEndorsed: seg.fullyEndorsed,
-    blockchainRegistered: seg.blockchainRegistered,
     c2paSigned: seg.c2paSigned || false,
     c2paManifestHash: seg.c2paManifestHash || null,
     c2paInstanceId: seg.c2paInstanceId || null,
     c2paSignedAt: seg.c2paSignedAt || null,
-    txHash: seg.txHash || null,
-    blockNumber: seg.blockNumber || null,
-    totalGasUsed: seg.totalGasUsed || null,
-    etherscanRegister: seg.etherscanRegister || null,
-    etherscanBroadcaster: seg.etherscanBroadcaster || null,
-    etherscanAuditor: seg.etherscanAuditor || null,
   })));
 });
 
@@ -1155,23 +1157,42 @@ router.get("/c2pa/:videoId/:segmentIndex", async (req, res) => {
   });
 });
 
+// Real embedded-C2PA verification for the video's source MP4 (distinct
+// from the per-segment sidecars above): fetches the actual pinned bytes
+// from IPFS and runs the full C2PA validation pipeline against them.
+router.get("/:videoId/source-c2pa", async (req, res) => {
+  const manifest = readManifest(req.params.videoId);
+  if (!manifest) return res.status(404).json({ error: "Video not found" });
+
+  let result;
+  if (!manifest.sourceIpfsCid) {
+    result = { exists: false, valid: false, error: "Source MP4 not yet pinned to IPFS" };
+  } else {
+    const buffer = await fetchBufferFromIPFS(manifest.sourceIpfsCid);
+    result = buffer ? await verifyEmbeddedAsset(buffer, "video/mp4") : { exists: false, valid: false, error: "Failed to fetch source MP4 from IPFS" };
+  }
+
+  res.json({
+    videoId: manifest.videoId,
+    c2paSigned: manifest.sourceC2paStatus === "signed",
+    c2paManifestHash: manifest.sourceC2paManifestHash || null,
+    c2paInstanceId: manifest.sourceC2paInstanceId || null,
+    c2paSignedAt: manifest.sourceC2paSignedAt || null,
+    verification: result,
+  });
+});
+
+// Local hash check (browser-computed hash vs the manifest's stored hash for
+// this segment). Chain-side verification against the Fabric ledger is a
+// separate call -- see POST /:videoId/verify-fabric -- since Fabric proofs
+// are anchored per-video (one merkleRoot covering all segments), not
+// per-segment.
 router.post("/verify", async (req, res) => {
   const { videoId, segmentIndex, clientHash } = req.body;
   const { manifest, segment } = getSegmentFromManifest(videoId, segmentIndex);
   if (!manifest || !segment) return res.status(404).json({ error: "Segment not found" });
 
   const isMatch = segment.sha256Hash === clientHash;
-  const blockchain = segment.blockchainRegistered
-    ? await verifyOnChain(videoId, segmentIndex, clientHash)
-    : {
-        available: false, hashMatch: null,
-        fullyEndorsed: segment.fullyEndorsed || null,
-        endorsementCount: segment.endorsementCount || 0,
-        error: manifest.blockchainStatus === "pending"
-          ? "Blockchain registration still running"
-          : "Segment not registered on-chain",
-      };
-
   const c2pa = readAndVerifyManifest(segment.localPath);
 
   res.json({
@@ -1179,7 +1200,6 @@ router.post("/verify", async (req, res) => {
     storedHash: segment.sha256Hash,
     ipfsCid: segment.ipfsCid,
     ipfsUrl: segment.ipfsUrl,
-    blockchain,
     c2pa: {
       signed: segment.c2paSigned || false,
       valid: c2pa.valid || false,
@@ -1189,14 +1209,6 @@ router.post("/verify", async (req, res) => {
       signer: c2pa.signer || null,
       assertionsCount: c2pa.assertions_count || 0,
       error: c2pa.error || null,
-    },
-    txInfo: {
-      txHash: segment.txHash || null,
-      blockNumber: segment.blockNumber || null,
-      totalGasUsed: segment.totalGasUsed || null,
-      etherscanRegister: segment.etherscanRegister || null,
-      etherscanBroadcaster: segment.etherscanBroadcaster || null,
-      etherscanAuditor: segment.etherscanAuditor || null,
     },
     playback: { source: manifest.playlistUrl, ipfsReady: Boolean(segment.ipfsCid) },
     status: isMatch ? "verified" : "tampered",
@@ -1247,10 +1259,13 @@ router.post("/:videoId/verify-fabric", async (req, res) => {
   }
 });
 
+// Tamper reports are whole-video (Fabric proofs are anchored per-video, not
+// per-segment) -- segmentIndex is kept in the request/response for the
+// caller's context but the chain call itself targets the video as a whole.
 router.post("/report-tamper", async (req, res) => {
   const { videoId, segmentIndex } = req.body;
-  if (!videoId || segmentIndex === undefined) {
-    return res.status(400).json({ error: "videoId and segmentIndex required" });
+  if (!videoId) {
+    return res.status(400).json({ error: "videoId required" });
   }
 
   const manifest = readManifest(videoId);
@@ -1260,48 +1275,61 @@ router.post("/report-tamper", async (req, res) => {
 
   updateManifest(videoId, (cur) => ({
     ...cur,
-    segments: cur.segments.map((s) =>
-      s.index === Number(segmentIndex)
-        ? { ...s, localTamperReported: true, tamperReportedAt: new Date().toISOString() }
-        : s
-    ),
+    localTamperReported: true,
+    tamperReportedAt: new Date().toISOString(),
   }));
 
-  reportTamperOnChain(videoId, Number(segmentIndex))
+  reportTamper("video", videoId)
     .then((result) => {
-      if (result.ok) {
-        console.log(`[upload] tamper on-chain seg=${segmentIndex} tx=${result.txHash?.slice(0, 16)}...`);
-        updateManifest(videoId, (cur) => ({
-          ...cur,
-          segments: cur.segments.map((s) =>
-            s.index === Number(segmentIndex)
-              ? { ...s, tamperTxHash: result.txHash, tamperBlockNumber: result.blockNumber }
-              : s
-          ),
-        }));
-      }
+      console.log(`[upload] Fabric ReportTamper video=${videoId} status=${result?.status} txId=${result?.txId}`);
+      updateManifest(videoId, (cur) => ({
+        ...cur,
+        status: result?.status === "disputed" ? "disputed" : cur.status,
+        fabricTamperResult: result,
+      }));
     })
-    .catch((err) => console.error("[upload] on-chain tamper report failed:", err.message));
+    .catch((err) => console.error("[upload] Fabric tamper report failed:", err.message));
 
   res.json({ reported: true, videoId, segmentIndex });
 });
 
-// (Part 3 next - reply with "next")
+// Auditor-only recovery from a disputed status back to active.
+router.post("/:videoId/clear-dispute", async (req, res) => {
+  const { videoId } = req.params;
+  const manifest = readManifest(videoId);
+  if (!manifest) return res.status(404).json({ error: "Video not found" });
+
+  try {
+    const result = await clearDispute("video", videoId);
+    updateManifest(videoId, (cur) => ({
+      ...cur,
+      status: result?.status === "active" ? "ready" : cur.status,
+      fabricTamperResult: result,
+    }));
+    res.json({ cleared: true, videoId, fabric: result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // =================================================================
 //  IMAGE ROUTES
 // =================================================================
 
 // POST /api/upload/image - upload a news image (IPFS-only, no local persistence)
-router.post("/image", imageUpload.single("image"), async (req, res) => {
+router.post("/image", uploadLimiter, imageUpload.single("image"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "Image file is required (jpg/png/webp)" });
 
   const inputPath = req.file.path;            // multer temp path (uploadsDir)
   const originalFilename = req.file.originalname;
   const mimeType = req.file.mimetype;
   const fileSize = req.file.size;
-  const title = req.body.title || originalFilename;
-  const description = req.body.description || "";
+  const meta = validateMeta(req.body.title, req.body.description, originalFilename);
+  if (meta.error) {
+    fs.unlink(inputPath, () => {});
+    return res.status(400).json({ error: meta.error });
+  }
+  const { title, description } = meta;
   const imageId = crypto.randomUUID();
 
   const extMap = {
@@ -1348,10 +1376,8 @@ router.post("/image", imageUpload.single("image"), async (req, res) => {
       createdAt: new Date().toISOString(),
       ipfsCid: null, ipfsUrl: null,
       metadataCid: null, metadataUrl: null,
-      c2paSidecarCid: null, c2paSidecarUrl: null,   // ← NEW: sidecar lives on IPFS
       status: "ready",
       ipfsStatus: "pending",
-      blockchainStatus: "pending",
       fabricStatus: "pending",
       fabricResult: null,
       fabricError: null,
@@ -1360,17 +1386,7 @@ router.post("/image", imageUpload.single("image"), async (req, res) => {
       c2paManifestHash: null,
       c2paInstanceId: null,
       c2paSignedAt: null,
-      c2paSidecarPath: null,                        // legacy field, always null in IPFS-only mode
-      endorsementCount: 0,
-      fullyEndorsed: false,
-      txHash: null,
-      txHashBroadcaster: null,
-      txHashAuditor: null,
-      blockNumber: null,
-      totalGasUsed: null,
-      etherscanRegister: null,
-      etherscanBroadcaster: null,
-      etherscanAuditor: null,
+      c2paError: null,
       backgroundError: null,
       forensicStatus, forensicError, forensics: forensicReport,
     });
@@ -1388,7 +1404,7 @@ router.post("/image", imageUpload.single("image"), async (req, res) => {
       updateImageManifest(imageId, (cur) => ({
         ...cur,
         ipfsStatus: cur.ipfsStatus === "uploaded" ? cur.ipfsStatus : "failed",
-        blockchainStatus: cur.blockchainStatus === "ready" ? cur.blockchainStatus : "degraded",
+        fabricStatus: cur.fabricStatus === "ready" ? cur.fabricStatus : "degraded",
         backgroundError: err.message,
       }));
       // Last-resort cleanup if the pipeline never reached its own unlink.
@@ -1429,40 +1445,34 @@ router.get("/images/:imageId/forensics", async (req, res) => {
   });
 });
 
-// Helper: fetch + verify the C2PA image sidecar from IPFS.
-// Falls back to the legacy local-disk path if the manifest predates the
-// IPFS-only migration (older uploads still have a sidecar on disk).
-const verifyImageSidecar = async (manifest) => {
-  if (manifest.c2paSidecarCid) {
-    try {
-      const signedManifest = await fetchJsonFromIPFS(manifest.c2paSidecarCid);
-      if (signedManifest) return verifyImageManifestObject(signedManifest);
-      return { exists: false, valid: false, error: "C2PA sidecar fetch from IPFS returned empty" };
-    } catch (err) {
-      return { exists: false, valid: false, error: `IPFS fetch failed: ${err.message}` };
-    }
-  }
-  // Legacy fallback - pre-migration images may still have a local sidecar.
-  if (manifest.localPath) return readAndVerifyImageManifest(manifest.localPath);
-  return { exists: false, valid: false, error: "C2PA sidecar not found on IPFS or locally" };
+// Helper: fetch the actual (C2PA-embedded) image bytes from IPFS and run
+// the real C2PA validation pipeline against them - signature, cert-chain
+// trust, and hash-binding against what IPFS is actually serving right
+// now. There is no separate sidecar anymore: the manifest lives inside
+// the pinned bytes themselves.
+const verifyImageC2pa = async (manifest) => {
+  if (!manifest.ipfsCid) return { exists: false, valid: false, error: "Image not yet pinned to IPFS" };
+  const buffer = await fetchBufferFromIPFS(manifest.ipfsCid);
+  if (!buffer) return { exists: false, valid: false, error: "Failed to fetch image bytes from IPFS" };
+  return verifyEmbeddedAsset(buffer, manifest.mimeType);
 };
 
 router.get("/images/:imageId/c2pa", async (req, res) => {
   const manifest = readImageManifest(req.params.imageId);
   if (!manifest) return res.status(404).json({ error: "Image not found" });
-  const result = await verifyImageSidecar(manifest);
+  const result = await verifyImageC2pa(manifest);
   res.json({
     imageId: manifest.imageId,
     c2paSigned: manifest.c2paSigned || false,
     c2paManifestHash: manifest.c2paManifestHash || null,
     c2paInstanceId: manifest.c2paInstanceId || null,
     c2paSignedAt: manifest.c2paSignedAt || null,
-    c2paSidecarCid: manifest.c2paSidecarCid || null,
-    c2paSidecarUrl: manifest.c2paSidecarUrl || null,
     verification: result,
   });
 });
 
+// Local hash check. Chain-side verification against the Fabric ledger is a
+// separate call -- see POST /images/:imageId/verify-fabric.
 router.post("/images/verify", async (req, res) => {
   const { imageId, clientHash } = req.body;
   if (!imageId || !clientHash) return res.status(400).json({ error: "imageId and clientHash required" });
@@ -1471,57 +1481,23 @@ router.post("/images/verify", async (req, res) => {
   if (!manifest) return res.status(404).json({ error: "Image not found" });
 
   const isMatch = manifest.sha256Hash === clientHash;
-
-  let blockchain = { available: false, hashMatch: null, endorsementCount: 0 };
-  if (manifest.blockchainStatus === "ready") {
-    try {
-      const chainData = await getImageFromChain(imageId);
-      if (chainData.exists) {
-        blockchain = {
-          available: true,
-          hashMatch: chainData.sha256Hash === clientHash,
-          endorsementCount: chainData.endorsementCount,
-          fullyEndorsed: chainData.endorsementCount >= 2,
-          status: chainData.status, // 0=Active 1=Revoked 2=Disputed
-        };
-      }
-    } catch (err) {
-      blockchain.error = err.message;
-    }
-  } else {
-    blockchain.error = manifest.blockchainStatus === "pending"
-      ? "Blockchain registration still running"
-      : "Image not registered on-chain";
-  }
-
-  const c2pa = await verifyImageSidecar(manifest);
+  const c2pa = await verifyImageC2pa(manifest);
 
   res.json({
     isMatch,
     storedHash: manifest.sha256Hash,
     ipfsCid: manifest.ipfsCid,
     ipfsUrl: manifest.ipfsUrl,
-    blockchain,
     c2pa: {
       signed: manifest.c2paSigned || false,
       valid: c2pa.valid || false,
       instanceId: manifest.c2paInstanceId || null,
       manifestHash: manifest.c2paManifestHash || null,
       signedAt: manifest.c2paSignedAt || null,
-      sidecarCid: manifest.c2paSidecarCid || null,
-      sidecarUrl: manifest.c2paSidecarUrl || null,
       signer: c2pa.signer || null,
       assertionsCount: c2pa.assertions_count || 0,
       mediaType: c2pa.media_type || "image",
       error: c2pa.error || null,
-    },
-    txInfo: {
-      txHash: manifest.txHash || null,
-      blockNumber: manifest.blockNumber || null,
-      totalGasUsed: manifest.totalGasUsed || null,
-      etherscanRegister: manifest.etherscanRegister || null,
-      etherscanBroadcaster: manifest.etherscanBroadcaster || null,
-      etherscanAuditor: manifest.etherscanAuditor || null,
     },
     status: isMatch ? "verified" : "tampered",
   });
@@ -1585,58 +1561,214 @@ router.post("/images/report-tamper", async (req, res) => {
     tamperReportedAt: new Date().toISOString(),
   }));
 
-  reportImageTamperOnChain(imageId)
+  reportTamper("image", imageId)
     .then((result) => {
-      if (result.ok) {
-        console.log(`[upload-image] tamper on-chain tx=${result.txHash?.slice(0, 16)}...`);
-        updateImageManifest(imageId, (cur) => ({
-          ...cur,
-          tamperTxHash: result.txHash,
-          tamperBlockNumber: result.blockNumber,
-        }));
-      }
+      console.log(`[upload-image] Fabric ReportTamper image=${imageId} status=${result?.status} txId=${result?.txId}`);
+      updateImageManifest(imageId, (cur) => ({
+        ...cur,
+        status: result?.status === "disputed" ? "disputed" : cur.status,
+        fabricTamperResult: result,
+      }));
     })
-    .catch((err) => console.error("[upload-image] on-chain tamper failed:", err.message));
+    .catch((err) => console.error("[upload-image] Fabric tamper report failed:", err.message));
 
   res.json({ reported: true, imageId });
 });
 
-router.get("/blockchain/image/:imageId", async (req, res) => {
-  const manifest = readImageManifest(req.params.imageId);
-  const chainImage = await getImageFromChain(req.params.imageId);
-
-  if (chainImage?.exists) return res.json(chainImage);
+// Auditor-only recovery from a disputed status back to active.
+router.post("/images/:imageId/clear-dispute", async (req, res) => {
+  const { imageId } = req.params;
+  const manifest = readImageManifest(imageId);
   if (!manifest) return res.status(404).json({ error: "Image not found" });
 
-  res.json({
-    title: manifest.title,
-    sha256Hash: manifest.sha256Hash,
-    ipfsCid: manifest.ipfsCid,
-    exists: false,
-    fallback: true,
-  });
+  try {
+    const result = await clearDispute("image", imageId);
+    updateImageManifest(imageId, (cur) => ({
+      ...cur,
+      status: result?.status === "active" ? "ready" : cur.status,
+      fabricTamperResult: result,
+    }));
+    res.json({ cleared: true, imageId, fabric: result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-router.get("/blockchain/image/:imageId/endorsements", async (req, res) => {
-  const endorsements = await getImageEndorsementsFromChain(req.params.imageId);
-  res.json({ endorsements });
+// =================================================================
+//  PUBLIC VERIFY-BY-UPLOAD
+//
+//  No login required - anyone can drop in a file and find out whether
+//  it's something TrustStream has on record. Two independent checks:
+//
+//  1. Embedded C2PA (images + video source MP4 - see c2pa.service.js):
+//     the file is genuinely self-describing, so this works even on a
+//     copy that was never re-uploaded to TrustStream - re-run the real
+//     C2PA validation pipeline directly against the uploaded bytes, then
+//     parse the manifest's instance_id (urn:truststream:image:<id> or
+//     urn:truststream:<id>:source) to look up the matching catalog entry.
+//  2. Hash fallback: if there's no embedded manifest (e.g. a raw .ts
+//     HLS segment, which was never C2PA-embeddable to begin with - see
+//     c2pa.service.js's file header), fall back to an exact SHA-256
+//     match against stored image/segment hashes.
+// =================================================================
+
+const parseTrustStreamInstanceId = (instanceId) => {
+  if (!instanceId) return null;
+  const imageMatch = instanceId.match(/^urn:truststream:image:([0-9a-f-]+)$/i);
+  if (imageMatch) return { mediaType: "image", id: imageMatch[1] };
+  const videoMatch = instanceId.match(/^urn:truststream:([0-9a-f-]+):source$/i);
+  if (videoMatch) return { mediaType: "video", id: videoMatch[1] };
+  return null;
+};
+
+const findByHash = (sha256Hash) => {
+  const image = listImageManifests().find((m) => m.sha256Hash === sha256Hash);
+  if (image) return { mediaType: "image", id: image.imageId, title: image.title };
+
+  const videos = listManifests({ kind: "video" });
+  for (const video of videos) {
+    const segment = (video.segments || []).find((s) => s.sha256Hash === sha256Hash);
+    if (segment) return { mediaType: "video", id: video.videoId, title: video.title, segmentIndex: segment.index };
+  }
+  return null;
+};
+
+router.post("/public-verify", publicVerifyLimiter, verifyUpload.single("file"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "A file is required" });
+  const { path: inputPath, mimetype } = req.file;
+
+  try {
+    const buffer = fs.readFileSync(inputPath);
+    const sha256Hash = crypto.createHash("sha256").update(buffer).digest("hex");
+
+    let c2pa = null;
+    let match = null;
+
+    if (mimetype === "image/jpeg" || mimetype === "image/jpg" || mimetype === "image/png" || mimetype === "video/mp4") {
+      c2pa = await verifyEmbeddedAsset(buffer, mimetype);
+      if (c2pa?.exists) {
+        const parsed = parseTrustStreamInstanceId(c2pa.instance_id);
+        if (parsed?.mediaType === "image") {
+          const manifest = readImageManifest(parsed.id);
+          if (manifest) match = { mediaType: "image", id: parsed.id, title: manifest.title, manifest };
+        } else if (parsed?.mediaType === "video") {
+          const manifest = readManifest(parsed.id);
+          if (manifest) match = { mediaType: "video", id: parsed.id, title: manifest.title, manifest };
+        }
+      }
+    }
+
+    if (!match) {
+      const hashMatch = findByHash(sha256Hash);
+      if (hashMatch) {
+        const manifest = hashMatch.mediaType === "image" ? readImageManifest(hashMatch.id) : readManifest(hashMatch.id);
+        match = { ...hashMatch, manifest };
+      }
+    }
+
+    const matchType = match
+      ? (c2pa?.valid && parseTrustStreamInstanceId(c2pa?.instance_id) ? "embedded-c2pa" : "hash-match")
+      : "none";
+
+    res.json({
+      matched: Boolean(match),
+      matchType,
+      sha256Hash,
+      c2pa: c2pa ? {
+        exists: c2pa.exists,
+        valid: c2pa.valid,
+        validation_state: c2pa.validation_state,
+        signer: c2pa.signer,
+        signer_org: c2pa.signer_org,
+        algorithm: c2pa.algorithm,
+        actions: c2pa.actions,
+        error: c2pa.error,
+      } : null,
+      match: match ? {
+        mediaType: match.mediaType,
+        id: match.id,
+        title: match.title,
+        createdAt: match.manifest?.createdAt || null,
+        fabricStatus: match.manifest?.fabricStatus || null,
+        status: match.manifest?.fabricResult?.status || match.manifest?.status || null,
+        detailUrl: match.mediaType === "image" ? `/image/${match.id}` : `/video/${match.id}`,
+      } : null,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    fs.unlink(inputPath, () => {});
+  }
 });
 
 // =================================================================
 //  UNIFIED FEED ROUTE
-//  Returns videos + images sorted by createdAt (Facebook-style)
+//  Returns videos + images sorted by createdAt (Facebook-style), with
+//  server-side search, media-type/status filtering, and pagination.
 // =================================================================
+
+const FEED_LIMIT_MAX = 50;
+const FEED_LIMIT_DEFAULT = 10;
 
 router.get("/feed", async (req, res) => {
   try {
+    const { search = "", mediaType = "all", status = "all" } = req.query;
+
     const videos = listManifests({ kind: "video" }).map(buildVideoSummaryWithForensics);
     const images = listImageManifests().map(buildImageSummary);
 
-    const feed = [...videos, ...images].sort(
+    let feed = [...videos, ...images].sort(
       (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
     );
 
-    res.json({ total: feed.length, feed });
+    const q = String(search).trim().toLowerCase();
+    if (q) {
+      feed = feed.filter((item) =>
+        (item.title || "").toLowerCase().includes(q) ||
+        (item.description || "").toLowerCase().includes(q)
+      );
+    }
+
+    // Counts reflect the search filter but not the mediaType/status pills
+    // themselves, so the pill labels ("Video (N)") stay meaningful no
+    // matter which pill is currently selected.
+    const counts = {
+      all: feed.length,
+      video: feed.filter((i) => i.mediaType === "video").length,
+      image: feed.filter((i) => i.mediaType === "image").length,
+    };
+
+    if (mediaType === "video" || mediaType === "image") {
+      feed = feed.filter((item) => item.mediaType === mediaType);
+    }
+
+    if (status === "disputed") {
+      feed = feed.filter((item) => item.fabricResult?.status === "disputed");
+    } else if (status === "revoked") {
+      feed = feed.filter((item) => item.fabricResult?.status === "revoked");
+    } else if (status === "verified") {
+      feed = feed.filter((item) =>
+        item.fabricStatus === "ready" &&
+        item.fabricResult?.status !== "disputed" &&
+        item.fabricResult?.status !== "revoked"
+      );
+    }
+
+    const total = feed.length;
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || FEED_LIMIT_DEFAULT, 1), FEED_LIMIT_MAX);
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const start = (page - 1) * limit;
+    const pageItems = feed.slice(start, start + limit);
+
+    res.json({
+      total,
+      page,
+      limit,
+      totalPages: Math.max(1, Math.ceil(total / limit)),
+      hasMore: start + limit < total,
+      counts,
+      feed: pageItems,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1674,9 +1806,17 @@ router.get("/blockchain/fabric-audit", async (req, res) => {
         createdByOrg: FABRIC_ORG_NAME_BY_MSP[m.fabricResult?.createdBy] || null,
         endorsements: m.fabricResult?.endorsements || null,
         endorsingPeers: m.fabricResult?.endorsingPeers || null,
+        txId: m.fabricResult?.txId || null,
+        blockNumber: m.fabricResult?.blockNumber || null,
+        disputed: m.fabricResult?.status === "disputed",
+        tamperReports: m.fabricResult?.tamperReports || null,
         revoked: m.status === "revoked",
         revokedAt: m.revokedAt || null,
         revocationReason: m.revocationReason || null,
+        // Full raw ledger document, for anyone who wants to see exactly
+        // what's actually stored on the chaincode's state (CouchDB) rather
+        // than this dashboard's derived summary fields above.
+        rawProof: m.fabricResult || null,
       }))
       .sort((a, b) => new Date(b.registeredAt) - new Date(a.registeredAt));
 
@@ -1686,6 +1826,7 @@ router.get("/blockchain/fabric-audit", async (req, res) => {
         ready: entries.filter((e) => e.fabricStatus === "ready").length,
         degraded: entries.filter((e) => e.fabricStatus === "degraded").length,
         skipped: entries.filter((e) => e.fabricStatus === "skipped").length,
+        disputed: entries.filter((e) => e.disputed).length,
       },
       entries,
     });
@@ -1695,12 +1836,12 @@ router.get("/blockchain/fabric-audit", async (req, res) => {
 });
 
 // =================================================================
-//  REVOCATION  (Ethereum + Fabric)
+//  REVOCATION  (Hyperledger Fabric)
 //
 //  Revoking withdraws the consortium's endorsement. It never deletes the
-//  record: both chains keep the original registration, and this writes a
+//  record: the ledger keeps the original registration, and this writes a
 //  revocation on top of it, so the fact that it was once vouched for stays
-//  visible and auditable.
+//  visible and auditable via GetMediaHistory.
 // =================================================================
 
 const revokeMedia = async ({ kind, id, reason }) => {
@@ -1715,8 +1856,8 @@ const revokeMedia = async ({ kind, id, reason }) => {
 
   const revokedAt = new Date().toISOString();
 
-  // Local catalog first so the UI reflects the decision immediately; both
-  // chains are then updated independently and their outcome recorded.
+  // Local catalog first so the UI reflects the decision immediately; the
+  // ledger is then updated and its outcome recorded.
   const applyLocal = (extra) => {
     const updater = (cur) => ({ ...cur, ...extra });
     return isVideo ? updateManifest(id, updater) : updateImageManifest(id, updater);
@@ -1724,21 +1865,14 @@ const revokeMedia = async ({ kind, id, reason }) => {
 
   applyLocal({ status: "revoked", revokedAt, revocationReason: reason || "" });
 
-  const [ethereum, fabric] = await Promise.all([
-    (isVideo ? revokeVideoOnChain(id) : revokeImageOnChain(id)).catch((err) => ({
-      ok: false,
-      error: err.message,
-    })),
-    revokeMediaProof(kind, id, reason).catch((err) => ({ error: err.message })),
-  ]);
+  const fabric = await revokeMediaProof(kind, id, reason).catch((err) => ({ error: err.message }));
 
   applyLocal({
-    revocationEthereum: ethereum,
-    revocationFabric: fabric,
+    revocation: fabric,
     fabricRevoked: !fabric?.error && !fabric?.skipped,
   });
 
-  return { revoked: true, kind, id, revokedAt, ethereum, fabric };
+  return { revoked: true, kind, id, revokedAt, fabric };
 };
 
 router.post("/:videoId/revoke", async (req, res) => {
@@ -1881,106 +2015,31 @@ router.get("/blockchain/revocation-timeline", async (req, res) => {
   }
 });
 
-router.get("/blockchain/video/:videoId", async (req, res) => {
-  const manifest = readManifest(req.params.videoId);
-  const chainVideo = await getVideoFromChain(req.params.videoId);
-
-  if (chainVideo?.exists) return res.json(chainVideo);
-  if (!manifest) return res.status(404).json({ error: "Video not found" });
-
-  res.json({
-    title: manifest.title,
-    metadataCid: manifest.metadataCid,
-    totalSegments: manifest.totalSegments,
-    exists: false,
-    fallback: true,
-  });
-});
-
-router.get("/blockchain/endorsements/:videoId/:segmentIndex", async (req, res) => {
-  const endorsements = await getEndorsementsFromChain(req.params.videoId, req.params.segmentIndex);
-  res.json({ endorsements });
-});
-
-router.get("/blockchain/txlogs", async (req, res) => {
-  const logs = await getTxLogsFromChain();
-  res.json({ logs });
-});
-
-router.get("/blockchain/receipt/:txHash", async (req, res) => {
-  try {
-    const receipt = await getTxReceipt(req.params.txHash);
-    if (!receipt) return res.status(404).json({ error: "Transaction not found" });
-    res.json(receipt);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-router.get("/blockchain/network-status", async (req, res) => {
-  try {
-    res.json(await getNetworkStatus());
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-router.get("/blockchain/wallet-balances", async (req, res) => {
-  try {
-    res.json({ wallets: await getWalletBalances() });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-router.get("/blockchain/segment-tx/:videoId/:segmentIndex", async (req, res) => {
-  const { segment } = getSegmentFromManifest(req.params.videoId, req.params.segmentIndex);
-  if (!segment) return res.status(404).json({ error: "Segment not found" });
-
-  res.json({
-    segmentIndex: segment.index,
-    blockNumber: segment.blockNumber || null,
-    totalGasUsed: segment.totalGasUsed || null,
-    transactions: {
-      register:    { txHash: segment.txHash            || null, gasUsed: segment.gasUsedRegister    || null, etherscanUrl: segment.etherscanRegister    || null, org: "NewsAgency"  },
-      broadcaster: { txHash: segment.txHashBroadcaster || null, gasUsed: segment.gasUsedBroadcaster || null, etherscanUrl: segment.etherscanBroadcaster || null, org: "Broadcaster" },
-      auditor:     { txHash: segment.txHashAuditor     || null, gasUsed: segment.gasUsedAuditor     || null, etherscanUrl: segment.etherscanAuditor     || null, org: "Auditor"     },
-    },
-  });
-});
-
 // =================================================================
-//  SYNC FROM BLOCKCHAIN (recovers both videos AND images)
+//  SYNC FROM BLOCKCHAIN (recovers both videos AND images from Fabric)
 // =================================================================
 
 router.post("/sync-from-blockchain", async (req, res) => {
   try {
-    console.log("[sync] starting full decentralized sync (chain + IPFS)...");
+    console.log("[sync] starting full decentralized sync (Fabric ledger + IPFS)...");
 
-    const logs = await getTxLogsFromChain();
+    const [videoQuery, imageQuery] = await Promise.all([
+      queryLedger("QueryByMediaType", ["video"]),
+      queryLedger("QueryByMediaType", ["image"]),
+    ]);
 
-    const videoIds = [...new Set(
-      logs
-        .filter((l) => ["REGISTER_VIDEO", "REGISTER_SEGMENT", "ENDORSE_SEGMENT", "REPORT_TAMPER", "REVOKE_VIDEO"].includes(l.action))
-        .map((l) => l.mediaId)
-        .filter(Boolean)
-    )];
+    const videoProofs = videoQuery.available ? videoQuery.results || [] : [];
+    const imageProofs = imageQuery.available ? imageQuery.results || [] : [];
 
-    const imageIds = [...new Set(
-      logs
-        .filter((l) => ["REGISTER_IMAGE", "ENDORSE_IMAGE", "REPORT_IMAGE_TAMPER", "REVOKE_IMAGE"].includes(l.action))
-        .map((l) => l.mediaId)
-        .filter(Boolean)
-    )];
-
-    if (!videoIds.length && !imageIds.length) {
-      return res.json({ message: "No media found on blockchain.", synced: [], failed: [] });
+    if (!videoProofs.length && !imageProofs.length) {
+      return res.json({ message: "No media found on the Fabric ledger.", synced: [], failed: [] });
     }
 
     const synced = [], failed = [];
 
     // ── Sync Videos ──────────────────────────────────────
-    for (const videoId of videoIds) {
+    for (const { value: proof } of videoProofs) {
+      const videoId = proof.mediaId;
       try {
         const existing = readManifest(videoId);
         if (existing) {
@@ -1988,25 +2047,15 @@ router.post("/sync-from-blockchain", async (req, res) => {
           continue;
         }
 
-        const chainVideo = await getVideoFromChain(videoId);
-        if (!chainVideo?.exists) {
-          failed.push({ videoId, error: "Not found on blockchain" });
-          continue;
-        }
-
         let ipfsMetadata = null;
-        if (chainVideo.metadataCid) {
-          try { ipfsMetadata = await fetchJsonFromIPFS(chainVideo.metadataCid); } catch {}
+        if (proof.metadataCid) {
+          try { ipfsMetadata = await fetchJsonFromIPFS(proof.metadataCid); } catch {}
         }
 
-        const totalSegments = chainVideo.totalSegments;
-        const endorsementResults = await Promise.allSettled(
-          Array.from({ length: totalSegments }, (_, i) => getEndorsementsFromChain(videoId, i))
-        );
+        const totalSegments = proof.totalSegments || ipfsMetadata?.segments?.length || 0;
 
         const segments = Array.from({ length: totalSegments }, (_, i) => {
           const ipfsSeg = ipfsMetadata?.segments?.[i];
-          const endorsements = endorsementResults[i].status === "fulfilled" ? endorsementResults[i].value : [];
           return {
             index: i,
             filename: ipfsSeg?.filename || `seg_${String(i).padStart(3, "0")}.ts`,
@@ -2016,16 +2065,10 @@ router.post("/sync-from-blockchain", async (req, res) => {
             durationSeconds: ipfsSeg?.durationSeconds || 2,
             ipfsCid: ipfsSeg?.cid || null,
             ipfsUrl: ipfsSeg?.cid ? buildGatewayUrl(ipfsSeg.cid) : null,
-            blockchainRegistered: true,
-            endorsementCount: endorsements.length,
-            fullyEndorsed: endorsements.length >= 2,
             c2paSigned: Boolean(ipfsSeg?.c2paManifestHash),
             c2paManifestHash: ipfsSeg?.c2paManifestHash || null,
             c2paInstanceId: ipfsSeg?.c2paInstanceId || null,
             c2paSignedAt: ipfsSeg?.c2paSignedAt || null,
-            txHash: ipfsSeg?.txHash || null,
-            blockNumber: ipfsSeg?.blockNumber || null,
-            totalGasUsed: ipfsSeg?.gasUsed || null,
           };
         });
 
@@ -2034,18 +2077,19 @@ router.post("/sync-from-blockchain", async (req, res) => {
         const manifest = writeManifest(videoId, {
           kind: "video",
           videoId,
-          title: chainVideo.title || ipfsMetadata?.title || "Untitled",
+          title: proof.title || ipfsMetadata?.title || "Untitled",
           description: ipfsMetadata?.description || "",
-          createdAt: chainVideo.registeredAt
-            ? new Date(chainVideo.registeredAt * 1000).toISOString()
-            : new Date().toISOString(),
+          createdAt: proof.createdAt || new Date().toISOString(),
           totalSegments,
           playlistUrl: ipfsMetadata?.playlistUrl || `/streams/${videoId}/playlist.m3u8`,
-          metadataCid: chainVideo.metadataCid || null,
-          metadataUrl: chainVideo.metadataCid ? buildGatewayUrl(chainVideo.metadataCid) : null,
-          status: "synced_from_chain",
+          metadataCid: proof.metadataCid || null,
+          metadataUrl: proof.metadataCid ? buildGatewayUrl(proof.metadataCid) : null,
+          merkleRoot: proof.merkleRoot || null,
+          status: proof.status === "disputed" ? "disputed" : proof.status === "revoked" ? "revoked" : "synced_from_chain",
           ipfsStatus: ipfsMetadata ? "uploaded" : "unknown",
-          blockchainStatus: "ready",
+          fabricStatus: "ready",
+          fabricResult: proof,
+          fabricError: null,
           c2paStatus: ipfsMetadata?.segments?.[0]?.c2paManifestHash ? "signed" : "unknown",
           backgroundError: null,
           syncedFromBlockchain: true,
@@ -2063,14 +2107,15 @@ router.post("/sync-from-blockchain", async (req, res) => {
           segments,
         });
 
-        synced.push({ videoId, title: manifest.title, mediaType: "video", status: "synced", source: ipfsMetadata ? "blockchain+ipfs" : "blockchain_only" });
+        synced.push({ videoId, title: manifest.title, mediaType: "video", status: "synced", source: ipfsMetadata ? "fabric+ipfs" : "fabric_only" });
       } catch (err) {
         failed.push({ videoId, error: err.message });
       }
     }
 
     // ── Sync Images ──────────────────────────────────────
-    for (const imageId of imageIds) {
+    for (const { value: proof } of imageProofs) {
+      const imageId = proof.mediaId;
       try {
         const existing = readImageManifest(imageId);
         if (existing) {
@@ -2078,15 +2123,9 @@ router.post("/sync-from-blockchain", async (req, res) => {
           continue;
         }
 
-        const chainImage = await getImageFromChain(imageId);
-        if (!chainImage?.exists) {
-          failed.push({ imageId, error: "Not found on blockchain" });
-          continue;
-        }
-
         let ipfsMetadata = null;
-        if (chainImage.metadataCid) {
-          try { ipfsMetadata = await fetchJsonFromIPFS(chainImage.metadataCid); } catch {}
+        if (proof.metadataCid) {
+          try { ipfsMetadata = await fetchJsonFromIPFS(proof.metadataCid); } catch {}
         }
 
         const metadataForensics = ipfsMetadata?.forensics || null;
@@ -2094,34 +2133,30 @@ router.post("/sync-from-blockchain", async (req, res) => {
         const manifest = writeImageManifest(imageId, {
           kind: "image",
           imageId,
-          title: chainImage.title || ipfsMetadata?.title || "Untitled",
-          description: chainImage.description || ipfsMetadata?.description || "",
+          title: proof.title || ipfsMetadata?.title || "Untitled",
+          description: ipfsMetadata?.description || "",
           filename: ipfsMetadata?.filename || `img_${imageId}.jpg`,
           originalFilename: ipfsMetadata?.originalFilename || null,
           mimeType: ipfsMetadata?.mimeType || "image/jpeg",
-          // IPFS-only mode: no local file. Verification fetches sidecar
-          // from c2paSidecarCid below.
+          // IPFS-only mode: no local file. The C2PA manifest is embedded
+          // in the pinned image bytes themselves (ipfsCid), not a sidecar.
           localPath: null,
-          sha256Hash: chainImage.sha256Hash || ipfsMetadata?.sha256Hash || null,
-          createdAt: chainImage.registeredAt
-            ? new Date(chainImage.registeredAt * 1000).toISOString()
-            : new Date().toISOString(),
-          ipfsCid: chainImage.ipfsCid || ipfsMetadata?.ipfsCid || null,
-          ipfsUrl: chainImage.ipfsCid ? buildGatewayUrl(chainImage.ipfsCid) : null,
-          metadataCid: chainImage.metadataCid || null,
-          metadataUrl: chainImage.metadataCid ? buildGatewayUrl(chainImage.metadataCid) : null,
-          status: "synced_from_chain",
+          sha256Hash: proof.sha256Hash || ipfsMetadata?.sha256Hash || null,
+          createdAt: proof.createdAt || new Date().toISOString(),
+          ipfsCid: proof.ipfsCid || ipfsMetadata?.ipfsCid || null,
+          ipfsUrl: proof.ipfsCid ? buildGatewayUrl(proof.ipfsCid) : null,
+          metadataCid: proof.metadataCid || null,
+          metadataUrl: proof.metadataCid ? buildGatewayUrl(proof.metadataCid) : null,
+          status: proof.status === "disputed" ? "disputed" : proof.status === "revoked" ? "revoked" : "synced_from_chain",
           ipfsStatus: ipfsMetadata ? "uploaded" : "unknown",
-          blockchainStatus: "ready",
+          fabricStatus: "ready",
+          fabricResult: proof,
+          fabricError: null,
           c2paStatus: ipfsMetadata?.c2paManifestHash ? "signed" : "unknown",
           c2paSigned: Boolean(ipfsMetadata?.c2paManifestHash),
-          c2paManifestHash: chainImage.c2paManifestHash || ipfsMetadata?.c2paManifestHash || null,
+          c2paManifestHash: proof.c2paHash || ipfsMetadata?.c2paManifestHash || null,
           c2paInstanceId: ipfsMetadata?.c2paInstanceId || null,
           c2paSignedAt: null,
-          c2paSidecarCid: ipfsMetadata?.c2paSidecarCid || null,
-          c2paSidecarUrl: ipfsMetadata?.c2paSidecarCid ? buildGatewayUrl(ipfsMetadata.c2paSidecarCid) : null,
-          endorsementCount: chainImage.endorsementCount || 0,
-          fullyEndorsed: (chainImage.endorsementCount || 0) >= 2,
           backgroundError: null,
           syncedFromBlockchain: true,
           syncedFromIPFS: Boolean(ipfsMetadata),
@@ -2135,7 +2170,7 @@ router.post("/sync-from-blockchain", async (req, res) => {
           } : null,
         });
 
-        synced.push({ imageId, title: manifest.title, mediaType: "image", status: "synced", source: ipfsMetadata ? "blockchain+ipfs" : "blockchain_only" });
+        synced.push({ imageId, title: manifest.title, mediaType: "image", status: "synced", source: ipfsMetadata ? "fabric+ipfs" : "fabric_only" });
       } catch (err) {
         failed.push({ imageId, error: err.message });
       }
