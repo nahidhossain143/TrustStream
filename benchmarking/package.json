@@ -1,0 +1,16 @@
+{
+  "name": "truststream-benchmarking",
+  "version": "1.0.0",
+  "description": "Hyperledger Caliper performance benchmarking for the TrustStream truststreamcc chaincode",
+  "private": true,
+  "scripts": {
+    "benchmark": "caliper launch manager --caliper-workspace . --caliper-networkconfig networkconfig.yaml --caliper-benchconfig benchmarks/config.yaml --caliper-flow-only-test"
+  },
+  "devDependencies": {
+    "@hyperledger/caliper-cli": "0.7.1"
+  },
+  "dependencies": {
+    "@grpc/grpc-js": "^1.13.1",
+    "@hyperledger/fabric-gateway": "^1.7.1"
+  }
+}

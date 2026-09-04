@@ -1,0 +1,81 @@
+test:
+  name: TrustStream truststreamcc Benchmark
+  description: >
+    Throughput, end-to-end registration latency, endorsement confirmation
+    time, and concurrency scaling for the truststreamcc chaincode's
+    RegisterVideoProof / RegisterImageProof / GetMediaProof functions.
+  workers:
+    number: 1
+  rounds:
+    # --- Registration latency & throughput, video vs image ---
+    - label: register-video-proof-1worker
+      txNumber: 20
+      rateControl:
+        type: fixed-rate
+        opts:
+          tps: 5
+      workload:
+        module: workloads/registerVideoProof.js
+
+    - label: register-image-proof-1worker
+      txNumber: 20
+      rateControl:
+        type: fixed-rate
+        opts:
+          tps: 5
+      workload:
+        module: workloads/registerImageProof.js
+
+    # --- Concurrency scaling: same workload, increasing worker count ---
+    - label: register-image-proof-5workers
+      txNumber: 60
+      workers:
+        number: 5
+      rateControl:
+        type: fixed-rate
+        opts:
+          tps: 15
+      workload:
+        module: workloads/registerImageProof.js
+
+    - label: register-image-proof-10workers
+      txNumber: 100
+      workers:
+        number: 10
+      rateControl:
+        type: fixed-rate
+        opts:
+          tps: 25
+      workload:
+        module: workloads/registerImageProof.js
+
+    # --- Read-path throughput/latency (query, not endorsement/commit) ---
+    - label: seed-query-target
+      txNumber: 1
+      workers:
+        number: 1
+      rateControl:
+        type: fixed-rate
+        opts:
+          tps: 1
+      workload:
+        module: workloads/seedQueryTarget.js
+
+    - label: query-media-proof-5workers
+      txNumber: 100
+      workers:
+        number: 5
+      rateControl:
+        type: fixed-rate
+        opts:
+          tps: 25
+      workload:
+        module: workloads/queryMediaProof.js
+
+  monitors:
+    resource:
+      - module: process-local
+        options:
+          interval: 2
+          include:
+            - node

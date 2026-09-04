@@ -1,0 +1,381 @@
+<!doctype html>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/2.5.0/Chart.min.js"></script>
+<script>
+    function plotChart(divId, chartData) {
+        // Convert from stringified html, to valid JSON
+        const chartDetails = JSON.parse(chartData.replace(/&quot;/g,'"'));
+        new Chart(document.getElementById(divId), {
+            type: chartDetails.type,
+            data: {
+                labels: chartDetails.labels,
+                datasets: chartDetails.datasets
+            },
+            options: {
+                legend: { display: chartDetails.legend },
+                title: {
+                    display: true,
+                    text: chartDetails.title
+                }
+            }
+        });
+    }
+</script>
+<html>
+<head>
+    <title>Hyperledger Caliper Report</title>
+    <meta charset="UTF-8"/>
+    <style type="text/css">
+        .left-column {
+            position: fixed;
+            width:20%;
+        }
+        .left-column ul {
+            display: block;
+            padding: 0;
+            list-style: none;
+            border-bottom: 1px solid #d9d9d9;
+            font-size: 14px;
+        }
+        .left-column h2{
+            font-size: 24px;
+            font-weight: 400;
+            margin-block-end: 0.5em;
+        }
+        .left-column h3{
+            font-size: 18px;
+            font-weight: 400;
+            margin-block-end: 0.5em;
+        }
+        .left-column li{
+            margin-left: 10px;
+            margin-bottom: 5px;
+            color: #5e6b73;
+        }
+        .right-column {
+            margin-left: 22%;
+            width:60%;
+        }
+        .right-column table {
+            font-size:11px;
+            color:#333333;
+            border-width: 1px;
+            border-color: #666666;
+            border-collapse: collapse;
+            margin-bottom: 10px;
+        }
+        .right-column h2{
+            font-weight: 400;
+        }
+        .right-column h3{
+            font-weight: 400;
+        }
+        .right-column h4 {
+            font-weight: 400;
+            margin-block-end: 0;
+        }
+        .right-column th {
+            border-width: 1px;
+            font-size: small;
+            padding: 8px;
+            border-style: solid;
+            border-color: #666666;
+            background-color: #f2f2f2;
+        }
+        .right-column td {
+            border-width: 1px;
+            font-size: small;
+            padding: 8px;
+            border-style: solid;
+            border-color: #666666;
+            background-color: #ffffff;
+            font-weight: 400;
+        }
+        .tag {
+            margin-bottom: 10px;
+            padding: 5px 10px;
+        }
+        pre {
+            padding: 10px;
+            margin-bottom: 10px;
+            border-radius: 5px;
+            background-color: #f2f2f2;
+            -webkit-border-radius: 5px;
+            -moz-border-radius: 5px;
+            -khtml-border-radius: 5px;
+            overflow:auto;
+            max-height:300px;
+            font-size:12px;
+        }
+        .charting {
+            display:flex;
+            flex-direction:row;
+            flex-wrap: wrap;
+            page-break-inside: auto;
+        }
+        .chart {
+            display:flex;
+            flex:1;
+            max-width: 50%;
+        }
+    </style>
+</head>
+<body style="font-family: IBM Plex Sans; font-weight: 200;">
+    <main>
+        <div class="left-column">
+            <img src="https://hyperledger-caliper.github.io/caliper/assets/img/hyperledger_caliper_logo_color.png" style="width:95%;" alt="">
+            <ul>
+                <h3>&nbspBasic information</h3>
+                <li>DLT: &nbsp<span style="font-weight: 500;">fabric</span></li>
+                <li>Name: &nbsp<span style="font-weight: 500;">TrustStream truststreamcc Benchmark</span></li>
+                <li>Description: &nbsp<span style="font-weight: 500;">Throughput, end-to-end registration latency, endorsement confirmation time, and concurrency scaling for the truststreamcc chaincode&#39;s RegisterVideoProof &#x2F; RegisterImageProof &#x2F; GetMediaProof functions.
+</span></li>
+                <li>Benchmark Rounds: &nbsp<span style="font-weight: 500;">6</span></li>
+                <li><a href="#benchmarkInfo">Details</a></li>
+            </ul>
+            <ul>
+                <h3>&nbspBenchmark results</h3>
+                <li><a href="#benchmarksummary">Summary</a></li>
+                    <li><a href="#register-video-proof-1worker">register-video-proof-1worker</a></li>
+                    <li><a href="#register-image-proof-1worker">register-image-proof-1worker</a></li>
+                    <li><a href="#register-image-proof-5workers">register-image-proof-5workers</a></li>
+                    <li><a href="#register-image-proof-10workers">register-image-proof-10workers</a></li>
+                    <li><a href="#seed-query-target">seed-query-target</a></li>
+                    <li><a href="#query-media-proof-5workers">query-media-proof-5workers</a></li>
+            </ul>
+            <ul>
+                <h3>&nbspSystem under test</h3>
+                <li><a href="#sutdetails">Details</a></li>
+            </ul>
+        </div>
+
+        <div class="right-column">
+            <h1 style="padding-top: 3em; font-weight: 500;">Caliper report</h1>
+            <div style="border-bottom: 1px solid #d9d9d9; margin-bottom: 10px;" id="benchmarksummary">
+                <table style="min-width: 100%;">
+                    <h3>Summary of performance metrics</h3>
+                    <tr>
+                         <th>Name</th> <th>Succ</th> <th>Fail</th> <th>Send Rate (TPS)</th> <th>Max Latency (s)</th> <th>Min Latency (s)</th> <th>Avg Latency (s)</th> <th>Throughput (TPS)</th>
+                    </tr>
+
+                    <tr>
+                         <td>register-video-proof-1worker</td> <td>20</td> <td>0</td> <td>5.3</td> <td>6.47</td> <td>2.87</td> <td>4.67</td> <td>3.0</td>
+                    </tr>
+                    <tr>
+                         <td>register-image-proof-1worker</td> <td>20</td> <td>0</td> <td>5.3</td> <td>2.17</td> <td>0.23</td> <td>1.20</td> <td>4.8</td>
+                    </tr>
+                    <tr>
+                         <td>register-image-proof-5workers</td> <td>60</td> <td>0</td> <td>15.3</td> <td>0.96</td> <td>0.14</td> <td>0.52</td> <td>14.5</td>
+                    </tr>
+                    <tr>
+                         <td>register-image-proof-10workers</td> <td>100</td> <td>0</td> <td>25.2</td> <td>1.00</td> <td>0.15</td> <td>0.46</td> <td>23.0</td>
+                    </tr>
+                    <tr>
+                         <td>seed-query-target</td> <td>1</td> <td>0</td> <td>Infinity</td> <td>2.29</td> <td>2.29</td> <td>2.29</td> <td>0.4</td>
+                    </tr>
+                    <tr>
+                         <td>query-media-proof-5workers</td> <td>100</td> <td>0</td> <td>25.2</td> <td>0.05</td> <td>0.01</td> <td>0.02</td> <td>25.2</td>
+                    </tr>
+                </table>
+            </div>
+            <div style="border-bottom: 1px solid #d9d9d9; padding-bottom: 10px;" id="register-video-proof-1worker">
+                <h2>Benchmark round: register-video-proof-1worker</h2>
+                <p></p>
+                <pre style="overflow: visible;white-space: pre-wrap;max-height:100%;">rateControl:
+  type: fixed-rate
+  opts:
+    tps: 5
+</pre>
+                        <h3>Performance metrics for register-video-proof-1worker</h3>
+                            <table style="min-width: 100%;">
+                                <tr>
+                                     <th>Name</th> <th>Succ</th> <th>Fail</th> <th>Send Rate (TPS)</th> <th>Max Latency (s)</th> <th>Min Latency (s)</th> <th>Avg Latency (s)</th> <th>Throughput (TPS)</th>
+                                </tr>
+                                <tr>
+                                     <td>register-video-proof-1worker</td> <td>20</td> <td>0</td> <td>5.3</td> <td>6.47</td> <td>2.87</td> <td>4.67</td> <td>3.0</td>
+                                </tr>
+                            </table>
+                        <h3>Resource utilization for register-video-proof-1worker</h3>
+            </div>
+
+            <div style="border-bottom: 1px solid #d9d9d9; padding-bottom: 10px;" id="register-image-proof-1worker">
+                <h2>Benchmark round: register-image-proof-1worker</h2>
+                <p></p>
+                <pre style="overflow: visible;white-space: pre-wrap;max-height:100%;">rateControl:
+  type: fixed-rate
+  opts:
+    tps: 5
+</pre>
+                        <h3>Performance metrics for register-image-proof-1worker</h3>
+                            <table style="min-width: 100%;">
+                                <tr>
+                                     <th>Name</th> <th>Succ</th> <th>Fail</th> <th>Send Rate (TPS)</th> <th>Max Latency (s)</th> <th>Min Latency (s)</th> <th>Avg Latency (s)</th> <th>Throughput (TPS)</th>
+                                </tr>
+                                <tr>
+                                     <td>register-image-proof-1worker</td> <td>20</td> <td>0</td> <td>5.3</td> <td>2.17</td> <td>0.23</td> <td>1.20</td> <td>4.8</td>
+                                </tr>
+                            </table>
+                        <h3>Resource utilization for register-image-proof-1worker</h3>
+            </div>
+
+            <div style="border-bottom: 1px solid #d9d9d9; padding-bottom: 10px;" id="register-image-proof-5workers">
+                <h2>Benchmark round: register-image-proof-5workers</h2>
+                <p></p>
+                <pre style="overflow: visible;white-space: pre-wrap;max-height:100%;">rateControl:
+  type: fixed-rate
+  opts:
+    tps: 15
+</pre>
+                        <h3>Performance metrics for register-image-proof-5workers</h3>
+                            <table style="min-width: 100%;">
+                                <tr>
+                                     <th>Name</th> <th>Succ</th> <th>Fail</th> <th>Send Rate (TPS)</th> <th>Max Latency (s)</th> <th>Min Latency (s)</th> <th>Avg Latency (s)</th> <th>Throughput (TPS)</th>
+                                </tr>
+                                <tr>
+                                     <td>register-image-proof-5workers</td> <td>60</td> <td>0</td> <td>15.3</td> <td>0.96</td> <td>0.14</td> <td>0.52</td> <td>14.5</td>
+                                </tr>
+                            </table>
+                        <h3>Resource utilization for register-image-proof-5workers</h3>
+            </div>
+
+            <div style="border-bottom: 1px solid #d9d9d9; padding-bottom: 10px;" id="register-image-proof-10workers">
+                <h2>Benchmark round: register-image-proof-10workers</h2>
+                <p></p>
+                <pre style="overflow: visible;white-space: pre-wrap;max-height:100%;">rateControl:
+  type: fixed-rate
+  opts:
+    tps: 25
+</pre>
+                        <h3>Performance metrics for register-image-proof-10workers</h3>
+                            <table style="min-width: 100%;">
+                                <tr>
+                                     <th>Name</th> <th>Succ</th> <th>Fail</th> <th>Send Rate (TPS)</th> <th>Max Latency (s)</th> <th>Min Latency (s)</th> <th>Avg Latency (s)</th> <th>Throughput (TPS)</th>
+                                </tr>
+                                <tr>
+                                     <td>register-image-proof-10workers</td> <td>100</td> <td>0</td> <td>25.2</td> <td>1.00</td> <td>0.15</td> <td>0.46</td> <td>23.0</td>
+                                </tr>
+                            </table>
+                        <h3>Resource utilization for register-image-proof-10workers</h3>
+            </div>
+
+            <div style="border-bottom: 1px solid #d9d9d9; padding-bottom: 10px;" id="seed-query-target">
+                <h2>Benchmark round: seed-query-target</h2>
+                <p></p>
+                <pre style="overflow: visible;white-space: pre-wrap;max-height:100%;">rateControl:
+  type: fixed-rate
+  opts:
+    tps: 1
+</pre>
+                        <h3>Performance metrics for seed-query-target</h3>
+                            <table style="min-width: 100%;">
+                                <tr>
+                                     <th>Name</th> <th>Succ</th> <th>Fail</th> <th>Send Rate (TPS)</th> <th>Max Latency (s)</th> <th>Min Latency (s)</th> <th>Avg Latency (s)</th> <th>Throughput (TPS)</th>
+                                </tr>
+                                <tr>
+                                     <td>seed-query-target</td> <td>1</td> <td>0</td> <td>Infinity</td> <td>2.29</td> <td>2.29</td> <td>2.29</td> <td>0.4</td>
+                                </tr>
+                            </table>
+                        <h3>Resource utilization for seed-query-target</h3>
+            </div>
+
+            <div style="border-bottom: 1px solid #d9d9d9; padding-bottom: 10px;" id="query-media-proof-5workers">
+                <h2>Benchmark round: query-media-proof-5workers</h2>
+                <p></p>
+                <pre style="overflow: visible;white-space: pre-wrap;max-height:100%;">rateControl:
+  type: fixed-rate
+  opts:
+    tps: 25
+</pre>
+                        <h3>Performance metrics for query-media-proof-5workers</h3>
+                            <table style="min-width: 100%;">
+                                <tr>
+                                     <th>Name</th> <th>Succ</th> <th>Fail</th> <th>Send Rate (TPS)</th> <th>Max Latency (s)</th> <th>Min Latency (s)</th> <th>Avg Latency (s)</th> <th>Throughput (TPS)</th>
+                                </tr>
+                                <tr>
+                                     <td>query-media-proof-5workers</td> <td>100</td> <td>0</td> <td>25.2</td> <td>0.05</td> <td>0.01</td> <td>0.02</td> <td>25.2</td>
+                                </tr>
+                            </table>
+                        <h3>Resource utilization for query-media-proof-5workers</h3>
+            </div>
+
+            <div style="border-bottom: 1px solid #d9d9d9; padding-bottom: 10px;">
+                <h2>Test Environment</h2>
+                <h3>benchmark config</h3>
+                <pre id="benchmarkInfo" style="overflow: visible;white-space: pre-wrap;max-height:100%;">name: TrustStream truststreamcc Benchmark
+description: &gt;
+  Throughput, end-to-end registration latency, endorsement confirmation time,
+  and concurrency scaling for the truststreamcc chaincode&#39;s RegisterVideoProof &#x2F;
+  RegisterImageProof &#x2F; GetMediaProof functions.
+workers:
+  number: 1
+rounds:
+  - label: register-video-proof-1worker
+    txNumber: 20
+    rateControl:
+      type: fixed-rate
+      opts:
+        tps: 5
+    workload:
+      module: workloads&#x2F;registerVideoProof.js
+  - label: register-image-proof-1worker
+    txNumber: 20
+    rateControl:
+      type: fixed-rate
+      opts:
+        tps: 5
+    workload:
+      module: workloads&#x2F;registerImageProof.js
+  - label: register-image-proof-5workers
+    txNumber: 60
+    workers:
+      number: 5
+    rateControl:
+      type: fixed-rate
+      opts:
+        tps: 15
+    workload:
+      module: workloads&#x2F;registerImageProof.js
+  - label: register-image-proof-10workers
+    txNumber: 100
+    workers:
+      number: 10
+    rateControl:
+      type: fixed-rate
+      opts:
+        tps: 25
+    workload:
+      module: workloads&#x2F;registerImageProof.js
+  - label: seed-query-target
+    txNumber: 1
+    workers:
+      number: 1
+    rateControl:
+      type: fixed-rate
+      opts:
+        tps: 1
+    workload:
+      module: workloads&#x2F;seedQueryTarget.js
+  - label: query-media-proof-5workers
+    txNumber: 100
+    workers:
+      number: 5
+    rateControl:
+      type: fixed-rate
+      opts:
+        tps: 25
+    workload:
+      module: workloads&#x2F;queryMediaProof.js
+monitors:
+  resource:
+    - module: process-local
+      options:
+        interval: 2
+        include:
+          - node
+</pre>
+                <h3>SUT</h3>
+                <pre id="sutdetails">not provided</pre>
+            </div>
+        </div>
+    </main>
+</body>
+</html>
