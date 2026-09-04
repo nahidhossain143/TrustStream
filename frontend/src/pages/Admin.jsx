@@ -105,9 +105,9 @@ function VideoUploadPanel({ isDark }) {
         const data = res.data;
         setBgStatus(data);
         const ipfsDone    = ["uploaded", "partial"].includes(data.ipfsStatus);
-        const chainDone   = ["ready", "degraded", "skipped"].includes(data.blockchainStatus);
+        const fabricDone  = ["ready", "degraded", "skipped"].includes(data.fabricStatus);
         const forensicDone = ["ready", "failed"].includes(data.forensicStatus || "");
-        if (ipfsDone && chainDone && forensicDone) clearInterval(pollRef.current);
+        if (ipfsDone && fabricDone && forensicDone) clearInterval(pollRef.current);
       } catch {}
     }, 4000);
   };
@@ -153,7 +153,6 @@ function VideoUploadPanel({ isDark }) {
   const isDisabled = stage === "uploading" || stage === "processing";
 
   const ipfsStatus    = bgStatus?.ipfsStatus;
-  const chainStatus   = bgStatus?.blockchainStatus;
   const fabricStatus  = bgStatus?.fabricStatus  || result?.fabricStatus;
   const c2paStatus    = bgStatus?.c2paStatus    || result?.c2paStatus;
   const forensicStatus = bgStatus?.forensicStatus || result?.forensicStatus;
@@ -184,10 +183,6 @@ function VideoUploadPanel({ isDark }) {
         if (stage !== "done") return "pending";
         if (!ipfsStatus || ipfsStatus === "pending" || ipfsStatus === "uploading") return "active";
         return "done";
-      case "blockchain":
-        if (stage !== "done") return "pending";
-        if (!chainStatus || chainStatus === "pending" || chainStatus === "registering") return "active";
-        return "done";
       case "fabric":
         if (stage !== "done") return "pending";
         if (!fabricStatus || fabricStatus === "pending" || fabricStatus === "registering") return "active";
@@ -203,7 +198,6 @@ function VideoUploadPanel({ isDark }) {
     { key: "forensic",   icon: "🔬",  label: "AI-free forensic analysis",     sublabel: "compression • temporal • AV sync" },
     { key: "c2pa",       icon: "📋",  label: "C2PA manifest signing",         sublabel: "8 assertions • HMAC-SHA256" },
     { key: "ipfs",       icon: "📌",  label: "IPFS upload via Pinata",        sublabel: "segments + metadata JSON" },
-    { key: "blockchain", icon: "⛓️", label: "Blockchain 3-org endorsement",  sublabel: "Sepolia • NewsAgency → Broadcaster → Auditor" },
     { key: "fabric",     icon: "🧾", label: "Fabric 3-org endorsement",      sublabel: "mychannel • AND(Org1, Org2, Org3)" },
   ];
 
@@ -430,7 +424,6 @@ function VideoUploadPanel({ isDark }) {
                 { label: "Risk Score", value: forensicRiskScore != null ? `${Math.round(forensicRiskScore * 100)}%` : "pending" },
                 { label: "C2PA",       value: bgStatus?.c2paStatus    || result.c2paStatus    || "pending" },
                 { label: "IPFS",       value: bgStatus?.ipfsStatus    || result.ipfsStatus    || "pending" },
-                { label: "Blockchain", value: bgStatus?.blockchainStatus || result.blockchainStatus || "pending" },
                 { label: "Fabric",     value: bgStatus?.fabricStatus    || result.fabricStatus    || "pending" },
               ].map(({ label, value, mono }) => (
                 <ResultRow key={label} label={label} value={value} mono={mono} isDark={isDark} />
@@ -505,8 +498,8 @@ function ImageUploadPanel({ isDark }) {
         const data = res.data;
         setBgStatus(data);
         const ipfsDone  = ["uploaded", "failed"].includes(data.ipfsStatus);
-        const chainDone = ["ready", "degraded", "skipped"].includes(data.blockchainStatus);
-        if (ipfsDone && chainDone) clearInterval(pollRef.current);
+        const fabricDone = ["ready", "degraded", "skipped"].includes(data.fabricStatus);
+        if (ipfsDone && fabricDone) clearInterval(pollRef.current);
       } catch {}
     }, 4000);
   };
@@ -554,7 +547,6 @@ function ImageUploadPanel({ isDark }) {
   const isDisabled = stage === "uploading";
 
   const ipfsStatus  = bgStatus?.ipfsStatus    || result?.ipfsStatus;
-  const chainStatus = bgStatus?.blockchainStatus || result?.blockchainStatus;
   const fabricStatus = bgStatus?.fabricStatus || result?.fabricStatus;
   const c2paStatus  = bgStatus?.c2paStatus    || result?.c2paStatus;
 
@@ -572,9 +564,6 @@ function ImageUploadPanel({ isDark }) {
       case "ipfs":
         if (!ipfsStatus || ipfsStatus === "pending" || ipfsStatus === "uploading") return "active";
         return "done";
-      case "blockchain":
-        if (!chainStatus || chainStatus === "pending" || chainStatus === "registering") return "active";
-        return "done";
       case "fabric":
         if (!fabricStatus || fabricStatus === "pending" || fabricStatus === "registering") return "active";
         return "done";
@@ -588,7 +577,6 @@ function ImageUploadPanel({ isDark }) {
     { key: "hash",       icon: "🔐",  label: "SHA-256 hash",                  sublabel: "single-file hash (no chain)" },
     { key: "c2pa",       icon: "📋",  label: "C2PA manifest signing",         sublabel: "7 assertions • HMAC-SHA256" },
     { key: "ipfs",       icon: "📌",  label: "IPFS upload via Pinata",        sublabel: "image file + metadata JSON" },
-    { key: "blockchain", icon: "⛓️", label: "Blockchain 3-org endorsement",  sublabel: "Sepolia • NewsAgency → Broadcaster → Auditor" },
     { key: "fabric",     icon: "🧾", label: "Fabric 3-org endorsement",      sublabel: "mychannel • AND(Org1, Org2, Org3)" },
   ];
 
@@ -757,8 +745,6 @@ function ImageUploadPanel({ isDark }) {
                 { label: "MIME",       value: result.mimeType || "—" },
                 { label: "C2PA",       value: bgStatus?.c2paStatus    || result.c2paStatus    || "pending" },
                 { label: "IPFS",       value: bgStatus?.ipfsStatus    || result.ipfsStatus    || "pending" },
-                { label: "Blockchain", value: bgStatus?.blockchainStatus || result.blockchainStatus || "pending" },
-                { label: "Endorsed",   value: bgStatus?.endorsementCount != null ? `${bgStatus.endorsementCount}/3` : result.endorsementCount != null ? `${result.endorsementCount}/3` : "pending" },
                 { label: "Fabric",     value: bgStatus?.fabricStatus    || result.fabricStatus    || "pending" },
               ].map(({ label, value, mono }) => (
                 <ResultRow key={label} label={label} value={value} mono={mono} isDark={isDark} />
@@ -779,7 +765,7 @@ function ImageUploadPanel({ isDark }) {
           <div className={`rounded-xl border px-4 py-3 flex items-start gap-3 ${isDark ? "border-amber-800/30 bg-amber-950/20" : "border-amber-200 bg-amber-50"}`}>
             <span className="text-base flex-shrink-0">🔒</span>
             <p className={`text-[11px] leading-relaxed ${isDark ? "text-amber-400/80" : "text-amber-700"}`}>
-              This image is permanently recorded on Ethereum Sepolia. It cannot be deleted — only revoked (status change). The blockchain record remains forever.
+              This image is permanently recorded on the Hyperledger Fabric ledger. It cannot be deleted — only revoked (status change). The ledger record remains forever.
             </p>
           </div>
 
@@ -868,7 +854,7 @@ export default function Admin() {
         }
 
         <p className={`text-center text-[10px] font-mono mt-6 ${isDark ? "text-neutral-700" : "text-neutral-400"}`}>
-          TrustStream Admin · C2PA v2.2 · Sepolia Testnet · IPFS via Pinata
+          TrustStream Admin · C2PA v2.2 · Hyperledger Fabric · IPFS via Pinata
         </p>
       </div>
     </div>

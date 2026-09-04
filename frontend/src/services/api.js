@@ -19,18 +19,10 @@ export const videoAPI = {
   revoke: (videoId, reason) => api.post(`/upload/${videoId}/revoke`, { reason }),
   reportTamper: (videoId, segmentIndex) =>
     api.post("/upload/report-tamper", { videoId, segmentIndex }),
+  clearDispute: (videoId) => api.post(`/upload/${videoId}/clear-dispute`),
   getForensics: (videoId) => api.get(`/upload/videos/${videoId}/forensics`),
 
   blockchain: {
-    getVideo: (videoId) => api.get(`/upload/blockchain/video/${videoId}`),
-    getEndorsements: (videoId, segmentIndex) =>
-      api.get(`/upload/blockchain/endorsements/${videoId}/${segmentIndex}`),
-    getSegmentTx: (videoId, segmentIndex) =>
-      api.get(`/upload/blockchain/segment-tx/${videoId}/${segmentIndex}`),
-    getTxLogs: () => api.get("/upload/blockchain/txlogs"),
-    getReceipt: (txHash) => api.get(`/upload/blockchain/receipt/${txHash}`),
-    getNetworkStatus: () => api.get("/upload/blockchain/network-status"),
-    getWalletBalances: () => api.get("/upload/blockchain/wallet-balances"),
     getFabricAudit: () => api.get("/upload/blockchain/fabric-audit"),
     getFabricHistory: (kind, id) =>
       api.get(`/upload/blockchain/fabric-history/${kind}/${id}`),
@@ -54,17 +46,24 @@ export const imageAPI = {
   revoke: (imageId, reason) =>
     api.post(`/upload/images/${imageId}/revoke`, { reason }),
   reportTamper: (imageId) => api.post("/upload/images/report-tamper", { imageId }),
+  clearDispute: (imageId) => api.post(`/upload/images/${imageId}/clear-dispute`),
+};
 
-  blockchain: {
-    getImage: (imageId) => api.get(`/upload/blockchain/image/${imageId}`),
-    getEndorsements: (imageId) =>
-      api.get(`/upload/blockchain/image/${imageId}/endorsements`),
+// ─── Public Verify-by-Upload API ──────────────────────────
+export const verifyAPI = {
+  verifyFile: (file) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    return api.post("/upload/public-verify", formData, {
+      headers: { "Content-Type": "multipart/form-data" },
+    });
   },
 };
 
 // ─── Unified Feed API ─────────────────────────────────────
 export const feedAPI = {
-  getFeed: () => api.get("/upload/feed"),
+  // params: { search, mediaType: all|video|image, status: all|verified|disputed|revoked, page, limit }
+  getFeed: (params = {}) => api.get("/upload/feed", { params }),
 };
 
 // ─── Timeline API ─────────────────────────────────────────

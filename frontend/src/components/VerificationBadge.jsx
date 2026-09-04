@@ -160,7 +160,7 @@ export default function VerificationBadge({ verified, details }) {
         <div className={`text-xs px-3 py-2 rounded-lg border ${
           isDark ? "text-amber-200/80 bg-amber-950/30 border-amber-700/30" : "text-amber-700 bg-amber-50 border-amber-200"
         }`}>
-          {details?.blockchainError || "Verification endpoint temporarily unavailable."}
+          {details?.verifyError || "Verification endpoint temporarily unavailable."}
         </div>
       </div>
     );
@@ -181,31 +181,6 @@ export default function VerificationBadge({ verified, details }) {
             isDark ? "bg-green-900/20 border-green-700/30 text-green-400" : "bg-green-50 border-green-200 text-green-700"
           }`}>
             🧾 Local Hash <span className="font-semibold ml-1">✓ Match</span>
-          </div>
-
-          {/* Blockchain */}
-          <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs border ${
-            details?.blockchainAvailable && details?.blockchainVerified === true
-              ? isDark ? "bg-blue-900/20 border-blue-700/30 text-blue-400" : "bg-blue-50 border-blue-200 text-blue-700"
-              : details?.blockchainAvailable && details?.blockchainVerified === false
-              ? isDark ? "bg-red-900/20 border-red-700/30 text-red-400" : "bg-red-50 border-red-200 text-red-600"
-              : isDark ? "bg-neutral-800 border-neutral-700 text-neutral-500" : "bg-neutral-100 border-neutral-200 text-neutral-400"
-          }`}>
-            ⛓️ Blockchain{" "}
-            <span className="font-semibold ml-1">
-              {details?.blockchainAvailable && details?.blockchainVerified === true
-                ? "✓ Verified"
-                : details?.blockchainAvailable && details?.blockchainVerified === false
-                ? "✗ Mismatch"
-                : "Pending"}
-            </span>
-            {details?.endorsementCount > 0 && (
-              <span className={`ml-1.5 px-1.5 py-0.5 rounded text-[9px] ${
-                isDark ? "bg-blue-800/40 text-blue-300" : "bg-blue-100 text-blue-600"
-              }`}>
-                {details.endorsementCount}/3 orgs
-              </span>
-            )}
           </div>
 
           {/* IPFS */}
@@ -233,14 +208,6 @@ export default function VerificationBadge({ verified, details }) {
 
         {/* C2PA Detail */}
         <C2PADetailPanel c2pa={details?.c2pa} isDark={isDark} />
-
-        {details?.blockchainError && (
-          <div className={`text-xs px-3 py-2 rounded-lg border ${
-            isDark ? "text-neutral-400 bg-neutral-900/80 border-neutral-800" : "text-neutral-500 bg-neutral-100 border-neutral-200"
-          }`}>
-            Blockchain note: {details.blockchainError}
-          </div>
-        )}
       </div>
     );
   }
@@ -259,15 +226,6 @@ export default function VerificationBadge({ verified, details }) {
             isDark ? "bg-red-900/20 border-red-700/30 text-red-400" : "bg-red-50 border-red-200 text-red-600"
           }`}>
             🧾 Local Hash <span className="font-semibold ml-1">✗ Mismatch</span>
-          </div>
-
-          <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs border ${
-            isDark ? "bg-red-900/20 border-red-700/30 text-red-400" : "bg-red-50 border-red-200 text-red-600"
-          }`}>
-            ⛓️ Blockchain{" "}
-            <span className="font-semibold ml-1">
-              {details?.blockchainAvailable && details?.blockchainVerified === false ? "✗ Mismatch" : "Pending"}
-            </span>
           </div>
 
           {details?.ipfsCid && (
@@ -298,14 +256,6 @@ export default function VerificationBadge({ verified, details }) {
         )}
 
         <C2PADetailPanel c2pa={details?.c2pa} isDark={isDark} />
-
-        {details?.blockchainError && (
-          <div className={`text-xs px-3 py-2 rounded-lg border ${
-            isDark ? "text-neutral-400 bg-neutral-900/80 border-neutral-800" : "text-neutral-500 bg-neutral-100 border-neutral-200"
-          }`}>
-            Blockchain note: {details.blockchainError}
-          </div>
-        )}
       </div>
     );
   }
