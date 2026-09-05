@@ -24,6 +24,10 @@ frontend/.vite/
 Local chain / geth artifacts
 network/data/geth/
 
+C2PA signing identity (private key + certs, regenerate via
+backend/scripts/generate-c2pa-cert.sh - see README)
+backend/certs/
+
 Logs
 .log
 npm-debug.log
