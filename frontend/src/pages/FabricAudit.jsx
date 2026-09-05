@@ -31,6 +31,7 @@ function StatBox({ label, value, accent, isDark }) {
 }
 
 function EndorsementRow({ entry, isDark, isNew }) {
+  const [showRaw, setShowRaw] = useState(false);
   const status = STATUS_STYLE[entry.fabricStatus] || STATUS_STYLE.skipped;
   const cardBg = isNew
     ? isDark
@@ -40,90 +41,137 @@ function EndorsementRow({ entry, isDark, isNew }) {
     ? isDark
       ? "bg-red-950/20 border-red-800/40 hover:bg-red-950/30"
       : "bg-red-50 border-red-200 hover:bg-red-100"
+    : entry.disputed
+    ? isDark
+      ? "bg-amber-950/20 border-amber-800/40 hover:bg-amber-950/30"
+      : "bg-amber-50 border-amber-200 hover:bg-amber-100"
     : isDark
     ? "bg-neutral-900/40 border-white/8 hover:bg-neutral-900/70"
     : "bg-white border-neutral-200 hover:bg-neutral-50";
   const textMuted = isDark ? "text-neutral-500" : "text-neutral-500";
 
+  const toggleRaw = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setShowRaw((v) => !v);
+  };
+
   return (
-    <Link
-      to={entry.mediaType === "video" ? `/video/${entry.id}` : `/image/${entry.id}`}
-      className={`block rounded-2xl border p-4 sm:p-5 transition-colors duration-700 ${cardBg}`}
-    >
-      <div className="flex items-start justify-between gap-3 flex-wrap">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <span className={`text-[9px] font-mono uppercase rounded-full border px-2 py-0.5 ${isDark ? "border-white/10 text-neutral-400" : "border-neutral-200 text-neutral-500"}`}>
-              {entry.mediaType}
-            </span>
-            <span className={`inline-flex items-center gap-1.5 text-[10px] font-semibold rounded-full border px-2 py-0.5 ${status.border} ${status.text}`}>
-              <span className={`w-1.5 h-1.5 rounded-full ${status.dot}`} />
-              {status.label}
-            </span>
-            {entry.revoked && (
-              <span className="inline-flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider rounded-full px-2 py-0.5 bg-red-600 text-white">
-                Revoked
+    <div className={`rounded-2xl border p-4 sm:p-5 transition-colors duration-700 ${cardBg}`}>
+      <Link to={entry.mediaType === "video" ? `/video/${entry.id}` : `/image/${entry.id}`} className="block">
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className={`text-[9px] font-mono uppercase rounded-full border px-2 py-0.5 ${isDark ? "border-white/10 text-neutral-400" : "border-neutral-200 text-neutral-500"}`}>
+                {entry.mediaType}
               </span>
-            )}
-            {isNew && (
-              <span className="inline-flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider rounded-full px-2 py-0.5 bg-cyan-500 text-white">
-                <span className="w-1 h-1 rounded-full bg-white animate-pulse" />
-                Just committed
+              <span className={`inline-flex items-center gap-1.5 text-[10px] font-semibold rounded-full border px-2 py-0.5 ${status.border} ${status.text}`}>
+                <span className={`w-1.5 h-1.5 rounded-full ${status.dot}`} />
+                {status.label}
               </span>
-            )}
+              {entry.disputed && (
+                <span className="inline-flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider rounded-full px-2 py-0.5 bg-amber-500 text-white">
+                  ⚠ Disputed
+                </span>
+              )}
+              {entry.revoked && (
+                <span className="inline-flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider rounded-full px-2 py-0.5 bg-red-600 text-white">
+                  Revoked
+                </span>
+              )}
+              {isNew && (
+                <span className="inline-flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider rounded-full px-2 py-0.5 bg-cyan-500 text-white">
+                  <span className="w-1 h-1 rounded-full bg-white animate-pulse" />
+                  Just committed
+                </span>
+              )}
+            </div>
+            <p className={`font-semibold mt-2 truncate ${isDark ? "text-white" : "text-neutral-900"}`}>{entry.title}</p>
+            <p className={`text-[11px] font-mono mt-1 ${textMuted}`}>
+              {entry.registeredAt ? new Date(entry.registeredAt).toLocaleString() : "No timestamp"}
+              {entry.createdByOrg && <> · submitted by {entry.createdByOrg}</>}
+            </p>
           </div>
-          <p className={`font-semibold mt-2 truncate ${isDark ? "text-white" : "text-neutral-900"}`}>{entry.title}</p>
-          <p className={`text-[11px] font-mono mt-1 ${textMuted}`}>
-            {entry.registeredAt ? new Date(entry.registeredAt).toLocaleString() : "No timestamp"}
-            {entry.createdByOrg && <> · submitted by {entry.createdByOrg}</>}
+
+          <p className={`text-[11px] font-mono ${textMuted} shrink-0`} title={entry.proofHash || ""}>
+            {shortHash(entry.proofHash)}
           </p>
         </div>
 
-        <p className={`text-[11px] font-mono ${textMuted} shrink-0`} title={entry.proofHash || ""}>
-          {shortHash(entry.proofHash)}
-        </p>
-      </div>
+        {entry.fabricStatus === "ready" && entry.endorsements && (
+          <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-2">
+            {ORG_ORDER.map((org) => {
+              const endorsed = entry.endorsements?.[org];
+              const peer = entry.endorsingPeers?.[org];
+              return (
+                <div
+                  key={org}
+                  className={`rounded-xl border px-3 py-2 flex items-center justify-between gap-2 ${
+                    endorsed
+                      ? isDark ? "border-emerald-700/30 bg-emerald-950/20" : "border-emerald-200 bg-emerald-50"
+                      : isDark ? "border-white/8 bg-neutral-900/40" : "border-neutral-200 bg-neutral-50"
+                  }`}
+                >
+                  <span className={`text-[11px] font-semibold ${endorsed ? (isDark ? "text-emerald-400" : "text-emerald-700") : textMuted}`}>
+                    {org}
+                  </span>
+                  <span className={`text-[10px] font-mono ${textMuted}`}>
+                    {endorsed ? `via ${peer ? peer.split(".")[0] : "?"}` : "pending"}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
 
-      {entry.fabricStatus === "ready" && entry.endorsements && (
-        <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-2">
-          {ORG_ORDER.map((org) => {
-            const endorsed = entry.endorsements?.[org];
-            const peer = entry.endorsingPeers?.[org];
-            return (
-              <div
-                key={org}
-                className={`rounded-xl border px-3 py-2 flex items-center justify-between gap-2 ${
-                  endorsed
-                    ? isDark ? "border-emerald-700/30 bg-emerald-950/20" : "border-emerald-200 bg-emerald-50"
-                    : isDark ? "border-white/8 bg-neutral-900/40" : "border-neutral-200 bg-neutral-50"
-                }`}
-              >
-                <span className={`text-[11px] font-semibold ${endorsed ? (isDark ? "text-emerald-400" : "text-emerald-700") : textMuted}`}>
-                  {org}
-                </span>
-                <span className={`text-[10px] font-mono ${textMuted}`}>
-                  {endorsed ? `via ${peer ? peer.split(".")[0] : "?"}` : "pending"}
-                </span>
-              </div>
-            );
-          })}
+        {entry.txId && (
+          <p className={`mt-3 text-[10px] font-mono break-all ${textMuted}`}>
+            TX: {entry.txId}{entry.blockNumber != null && ` · Block: ${entry.blockNumber}`}
+          </p>
+        )}
+
+        {entry.disputed && (
+          <p className={`mt-3 text-[11px] font-mono ${isDark ? "text-amber-400/90" : "text-amber-700"}`}>
+            Reporting orgs: {Object.keys(entry.tamperReports || {}).join(", ") || "—"}
+          </p>
+        )}
+
+        {entry.revoked && (
+          <p className={`mt-3 text-[11px] font-mono ${isDark ? "text-red-400/90" : "text-red-700"}`}>
+            Endorsement withdrawn
+            {entry.revokedAt && ` on ${new Date(entry.revokedAt).toLocaleString()}`}
+            {entry.revocationReason && ` — ${entry.revocationReason}`}
+          </p>
+        )}
+
+        {entry.fabricStatus !== "ready" && entry.fabricError && (
+          <p className={`mt-3 text-[11px] font-mono ${isDark ? "text-amber-400/80" : "text-amber-600"}`}>
+            {entry.fabricError}
+          </p>
+        )}
+      </Link>
+
+      {entry.rawProof && (
+        <div className={`mt-4 pt-3 border-t ${isDark ? "border-white/8" : "border-neutral-200"}`}>
+          <button
+            onClick={toggleRaw}
+            className={`text-[10px] font-mono uppercase tracking-wider px-2.5 py-1 rounded-full border transition-colors ${
+              isDark ? "border-white/10 text-neutral-400 hover:border-white/20" : "border-neutral-200 text-neutral-500 hover:border-neutral-300"
+            }`}
+          >
+            {showRaw ? "▾ Hide raw ledger JSON" : "▸ View raw ledger JSON"}
+          </button>
+
+          {showRaw && (
+            <pre className={`mt-2 rounded-xl p-3 text-[10px] font-mono overflow-x-auto whitespace-pre-wrap break-all ${
+              isDark ? "bg-neutral-950 border border-white/8 text-neutral-300" : "bg-neutral-50 border border-neutral-200 text-neutral-700"
+            }`}>
+              {JSON.stringify(entry.rawProof, null, 2)}
+            </pre>
+          )}
         </div>
       )}
-
-      {entry.revoked && (
-        <p className={`mt-3 text-[11px] font-mono ${isDark ? "text-red-400/90" : "text-red-700"}`}>
-          Endorsement withdrawn
-          {entry.revokedAt && ` on ${new Date(entry.revokedAt).toLocaleString()}`}
-          {entry.revocationReason && ` — ${entry.revocationReason}`}
-        </p>
-      )}
-
-      {entry.fabricStatus !== "ready" && entry.fabricError && (
-        <p className={`mt-3 text-[11px] font-mono ${isDark ? "text-amber-400/80" : "text-amber-600"}`}>
-          {entry.fabricError}
-        </p>
-      )}
-    </Link>
+    </div>
   );
 }
 
@@ -256,8 +304,10 @@ export default function FabricAudit() {
       ? entries
       : filter === "revoked"
       ? entries.filter((e) => e.revoked)
+      : filter === "disputed"
+      ? entries.filter((e) => e.disputed)
       : entries.filter((e) => e.fabricStatus === filter);
-  const summary = data?.summary || { total: 0, ready: 0, degraded: 0, skipped: 0 };
+  const summary = data?.summary || { total: 0, ready: 0, degraded: 0, skipped: 0, disputed: 0 };
   const revokedCount = entries.filter((e) => e.revoked).length;
 
   return (
@@ -305,15 +355,16 @@ export default function FabricAudit() {
           )}
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
           <StatBox label="Total Records" value={summary.total} isDark={isDark} />
           <StatBox label="Committed" value={summary.ready} accent="text-emerald-400" isDark={isDark} />
+          <StatBox label="Disputed" value={summary.disputed} accent="text-amber-400" isDark={isDark} />
           <StatBox label="Revoked" value={revokedCount} accent="text-red-400" isDark={isDark} />
           <StatBox label="Degraded" value={summary.degraded} accent="text-amber-400" isDark={isDark} />
         </div>
 
         <div className="flex flex-wrap gap-2">
-          {["all", "ready", "revoked", "degraded", "skipped"].map((key) => (
+          {["all", "ready", "disputed", "revoked", "degraded", "skipped"].map((key) => (
             <button
               key={key}
               onClick={() => setFilter(key)}

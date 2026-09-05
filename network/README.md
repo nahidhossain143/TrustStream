@@ -1,13 +1,3 @@
-# Sample Hardhat Project
+# network/
 
-This project demonstrates a basic Hardhat use case. It comes with a sample contract, a test for that contract, and a Hardhat Ignition module that deploys that contract.
-
-Try running some of the following tasks:
-
-```shell
-npx hardhat help
-npx hardhat test
-REPORT_GAS=true npx hardhat test
-npx hardhat node
-npx hardhat ignition deploy ./ignition/modules/Lock.js
-```
+Hyperledger Fabric chaincode for TrustStream. `chaincode/truststream/javascript/` is the source of truth — copy it into `fabric-samples/chaincode/truststream/` before deploying (see the top-level README's setup guide), and keep the two in sync after edits.

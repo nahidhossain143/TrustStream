@@ -5,7 +5,6 @@ import Navbar from "../components/Navbar";
 import ForensicPanel from "../components/ForensicPanel";
 import { useTheme } from "../context/ThemeContext";
 
-const CONTRACT_ADDRESS = import.meta.env.VITE_CONTRACT_ADDRESS || "";
 const IPFS_GATEWAY = "https://gateway.pinata.cloud/ipfs";
 const FABRIC_CHANNEL = import.meta.env.VITE_FABRIC_CHANNEL_NAME || "mychannel";
 const FABRIC_CHAINCODE = import.meta.env.VITE_FABRIC_CHAINCODE_NAME || "truststreamcc";
@@ -121,6 +120,30 @@ export default function VideoDetail() {
   const [history, setHistory] = useState(null);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState(null);
+  const [showRawProof, setShowRawProof] = useState(false);
+
+  const [tamperReporting, setTamperReporting] = useState(false);
+  const [clearingDispute, setClearingDispute] = useState(false);
+
+  const reportTamper = () => {
+    setTamperReporting(true);
+    api
+      .post("/upload/report-tamper", { videoId })
+      .then(() => api.get(`/upload/videos/${videoId}`))
+      .then((res) => setManifest(res.data))
+      .catch((err) => alert(err.response?.data?.error || "Tamper report failed"))
+      .finally(() => setTamperReporting(false));
+  };
+
+  const clearDispute = () => {
+    setClearingDispute(true);
+    api
+      .post(`/upload/${videoId}/clear-dispute`)
+      .then(() => api.get(`/upload/videos/${videoId}`))
+      .then((res) => setManifest(res.data))
+      .catch((err) => alert(err.response?.data?.error || "Clear dispute failed"))
+      .finally(() => setClearingDispute(false));
+  };
 
   const checkFabricAuthenticity = () => {
     setFabricCheckLoading(true);
@@ -198,7 +221,7 @@ export default function VideoDetail() {
     );
   }
 
-  const totalGasEth = manifest.totalGasUsed ? (manifest.totalGasUsed / 1e18).toFixed(8) : null;
+  const disputed = manifest.fabricResult?.status === "disputed";
 
   return (
     <div className={`min-h-screen ${bg} ${text} transition-colors duration-300`}>
@@ -225,10 +248,14 @@ export default function VideoDetail() {
             </div>
 
             <div className="flex gap-2 flex-wrap">
-              <StatusBadge ok={manifest.blockchainStatus === "ready"} label="Blockchain" />
               <StatusBadge ok={manifest.c2paStatus === "signed"} label="C2PA" />
               <StatusBadge ok={manifest.ipfsStatus === "uploaded"} label="IPFS" />
               <StatusBadge ok={isFabricReady(manifest)} label="Fabric" />
+              {disputed && (
+                <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold border rounded-full px-2.5 py-1 text-red-400 bg-red-950/30 border-red-800/40">
+                  ⚠ Disputed
+                </span>
+              )}
               <ForensicBadge forensics={manifest.forensics} />
 
               <Link
@@ -266,55 +293,6 @@ export default function VideoDetail() {
             <InfoRow label="Total Segments" value={`${manifest.totalSegments} × 2s`} isDark={isDark} />
             <InfoRow label="Duration" value={`${manifest.totalSegments * 2}s`} isDark={isDark} />
             <InfoRow label="Status" value={manifest.status} isDark={isDark} />
-          </div>
-        </div>
-
-        <div className={`rounded-2xl border overflow-hidden ${cardBg}`}>
-          <div className="px-6 py-5">
-            <SectionHeader icon="⛓" title="Blockchain Info" color="emerald" isDark={isDark} />
-            <InfoRow label="Network" value="Ethereum Sepolia Testnet" isDark={isDark} />
-            <InfoRow label="Chain ID" value="11155111" isDark={isDark} />
-            <InfoRow
-              label="Contract"
-              value={CONTRACT_ADDRESS}
-              mono
-              link={`https://sepolia.etherscan.io/address/${CONTRACT_ADDRESS}`}
-              isDark={isDark}
-            />
-            <InfoRow label="Status" value={manifest.blockchainStatus} isDark={isDark} />
-            <InfoRow
-              label="TX Hash"
-              value={manifest.videoTxHash}
-              mono
-              link={manifest.videoTxHash ? `https://sepolia.etherscan.io/tx/${manifest.videoTxHash}` : null}
-              isDark={isDark}
-            />
-            <InfoRow label="Block" value={manifest.videoBlockNumber?.toString()} mono isDark={isDark} />
-            <InfoRow label="Total Gas" value={manifest.totalGasUsed ? `${manifest.totalGasUsed.toLocaleString()} units` : null} isDark={isDark} />
-            <InfoRow label="Gas (ETH)" value={totalGasEth ? `${totalGasEth} ETH` : null} isDark={isDark} />
-            <InfoRow label="RPC Provider" value="Alchemy" isDark={isDark} />
-
-            <div className={`pt-3 mt-1 border-t ${isDark ? "border-white/5" : "border-neutral-100"}`}>
-              <p className={`text-[10px] uppercase tracking-widest font-mono mb-3 ${textMuted}`}>3-Org Consortium</p>
-              <div className="grid grid-cols-3 gap-2">
-                {[
-                  { name: "NewsAgency", role: "Submitter", icon: "🏢", color: "text-emerald-400" },
-                  { name: "Broadcaster", role: "Endorser", icon: "📡", color: "text-blue-400" },
-                  { name: "Auditor", role: "Endorser", icon: "🔍", color: "text-violet-400" },
-                ].map(({ name, role, icon, color }) => (
-                  <div
-                    key={name}
-                    className={`rounded-xl p-3 border text-center ${
-                      isDark ? "bg-neutral-800/40 border-neutral-700" : "bg-neutral-50 border-neutral-200"
-                    }`}
-                  >
-                    <div className="text-xl mb-1">{icon}</div>
-                    <p className={`text-[11px] font-semibold ${color}`}>{name}</p>
-                    <p className={`text-[9px] ${textMuted}`}>{role}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
           </div>
         </div>
 
@@ -384,6 +362,52 @@ export default function VideoDetail() {
                   );
                 })}
               </div>
+            </div>
+
+            <div className={`pt-3 mt-3 border-t ${isDark ? "border-white/5" : "border-neutral-100"}`}>
+              <p className={`text-[10px] uppercase tracking-widest font-mono mb-3 ${textMuted}`}>
+                Tamper Reports &amp; Dispute
+              </p>
+
+              {disputed ? (
+                <div
+                  className={`rounded-xl p-4 border mb-3 ${
+                    isDark ? "bg-red-950/20 border-red-800/40" : "bg-red-50 border-red-200"
+                  }`}
+                >
+                  <p className="text-sm font-bold text-red-400">
+                    ⚠ Disputed — 2 of 3 orgs reported possible tampering
+                  </p>
+                  <p className={`text-[10px] font-mono mt-1 ${textMuted}`}>
+                    Reporting orgs: {Object.keys(manifest.fabricResult?.tamperReports || {}).join(", ") || "—"}
+                  </p>
+                  <button
+                    onClick={clearDispute}
+                    disabled={clearingDispute}
+                    className={`w-full mt-3 rounded-xl py-2.5 text-xs font-semibold border transition-colors ${
+                      clearingDispute
+                        ? "opacity-60 cursor-wait"
+                        : "bg-emerald-950/30 border-emerald-800/40 text-emerald-300 hover:bg-emerald-950/50"
+                    }`}
+                  >
+                    {clearingDispute ? "Clearing…" : "✓ Clear Dispute (Auditor only)"}
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={reportTamper}
+                  disabled={tamperReporting}
+                  className={`w-full rounded-xl py-2.5 text-xs font-semibold border transition-colors ${
+                    tamperReporting
+                      ? "opacity-60 cursor-wait"
+                      : isDark
+                      ? "bg-amber-950/30 border-amber-800/40 text-amber-300 hover:bg-amber-950/50"
+                      : "bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100"
+                  }`}
+                >
+                  {tamperReporting ? "Reporting…" : "🚩 Report Tamper"}
+                </button>
+              )}
             </div>
 
             <div className={`pt-3 mt-3 border-t ${isDark ? "border-white/5" : "border-neutral-100"}`}>
@@ -527,6 +551,27 @@ export default function VideoDetail() {
                 )}
               </div>
             </div>
+
+            {manifest.fabricResult && (
+              <div className={`pt-3 mt-3 border-t ${isDark ? "border-white/5" : "border-neutral-100"}`}>
+                <button
+                  onClick={() => setShowRawProof((v) => !v)}
+                  className={`text-[10px] font-mono uppercase tracking-wider px-2.5 py-1 rounded-full border transition-colors ${
+                    isDark ? "border-white/10 text-neutral-400 hover:border-white/20" : "border-neutral-200 text-neutral-500 hover:border-neutral-300"
+                  }`}
+                >
+                  {showRawProof ? "▾ Hide raw ledger JSON" : "▸ View raw ledger JSON"}
+                </button>
+
+                {showRawProof && (
+                  <pre className={`mt-2 rounded-xl p-3 text-[10px] font-mono overflow-x-auto whitespace-pre-wrap break-all ${
+                    isDark ? "bg-neutral-950 border border-white/8 text-neutral-300" : "bg-neutral-50 border border-neutral-200 text-neutral-700"
+                  }`}>
+                    {JSON.stringify(manifest.fabricResult, null, 2)}
+                  </pre>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
@@ -561,20 +606,18 @@ export default function VideoDetail() {
             <SectionHeader icon="📋" title="C2PA Provenance" color="violet" isDark={isDark} />
             <InfoRow label="Spec Version" value="C2PA v2.2" isDark={isDark} />
             <InfoRow label="Status" value={manifest.c2paStatus} isDark={isDark} />
-            <InfoRow label="Assertions" value="8 per segment" isDark={isDark} />
-            <InfoRow label="Algorithm" value="HMAC-SHA256" isDark={isDark} />
-            <InfoRow label="Signer" value="NewsAgency" isDark={isDark} />
-            <InfoRow label="Format" value="Sidecar .c2pa file per .ts segment" isDark={isDark} />
+            <InfoRow label="Assertions" value="6 per segment" isDark={isDark} />
+            <InfoRow label="Algorithm" value="ES256 (P-256 ECDSA, X.509 cert chain)" isDark={isDark} />
+            <InfoRow label="Signer" value="TrustStream C2PA Signer" isDark={isDark} />
+            <InfoRow label="Format" value="Sidecar .c2pa file per .ts segment (MPEG-TS isn't C2PA-embeddable — the source MP4 gets real embedded C2PA instead, see below)" isDark={isDark} />
 
             <div className={`pt-3 mt-1 border-t ${isDark ? "border-white/5" : "border-neutral-100"}`}>
-              <p className={`text-[10px] uppercase tracking-widest font-mono mb-3 ${textMuted}`}>8 Assertions</p>
+              <p className={`text-[10px] uppercase tracking-widest font-mono mb-3 ${textMuted}`}>6 Assertions</p>
               <div className="grid grid-cols-2 gap-2">
                 {[
                   { label: "Hash Binding", icon: "🔒", value: "c2pa.hash.data" },
                   { label: "Actions", icon: "⚡", value: "c2pa.actions" },
-                  { label: "Claim Generator", icon: "🏭", value: "c2pa.claim_generator" },
                   { label: "Creative Work", icon: "🎬", value: "schema-org" },
-                  { label: "Ingredient", icon: "🧬", value: "c2pa.ingredient" },
                   { label: "Timestamp", icon: "⏰", value: "c2pa.timestamp" },
                   { label: "Consortium", icon: "🏢", value: "truststream.consortium" },
                   { label: "Chain Hash", icon: "⛓", value: "truststream.chain_hash" },
@@ -600,6 +643,20 @@ export default function VideoDetail() {
 
         <div className={`rounded-2xl border overflow-hidden ${cardBg}`}>
           <div className="px-6 py-5">
+            <SectionHeader icon="🎬" title="Source MP4 Provenance" color="violet" isDark={isDark} />
+            <p className={`text-[11px] mb-3 ${textMuted}`}>
+              Unlike the per-segment sidecars above, the original MP4 (before HLS splitting) is a real C2PA-embeddable
+              container — a genuine, spec-compliant manifest is embedded directly into its bytes and pinned to IPFS.
+            </p>
+            <InfoRow label="Status" value={manifest.sourceC2paStatus} isDark={isDark} />
+            <InfoRow label="Manifest Hash" value={manifest.sourceC2paManifestHash} mono isDark={isDark} />
+            <InfoRow label="Instance ID" value={manifest.sourceC2paInstanceId} mono isDark={isDark} />
+            <InfoRow label="IPFS CID" value={manifest.sourceIpfsCid} mono isDark={isDark} />
+          </div>
+        </div>
+
+        <div className={`rounded-2xl border overflow-hidden ${cardBg}`}>
+          <div className="px-6 py-5">
             <SectionHeader icon="🔐" title="Segment Hashes" color="pink" isDark={isDark} />
             <p className={`text-[11px] mb-4 ${textMuted}`}>
               SHA-256 chain hash links all segments sequentially. Modifying any segment breaks the chain.
@@ -619,11 +676,6 @@ export default function VideoDetail() {
                     </span>
 
                     <div className="flex gap-1.5">
-                      {seg.blockchainRegistered && (
-                        <span className="text-[9px] text-emerald-500 bg-emerald-950/30 border border-emerald-800/40 px-1.5 py-0.5 rounded-md font-mono">
-                          ⛓ On-chain
-                        </span>
-                      )}
                       {seg.c2paSigned && (
                         <span className="text-[9px] text-violet-500 bg-violet-950/30 border border-violet-800/40 px-1.5 py-0.5 rounded-md font-mono">
                           📋 C2PA
@@ -640,26 +692,6 @@ export default function VideoDetail() {
                   <p className={`font-mono text-[9px] break-all leading-relaxed ${isDark ? "text-neutral-600" : "text-neutral-400"}`}>
                     SHA256: <span className={isDark ? "text-blue-400/80" : "text-blue-600"}>{seg.sha256Hash}</span>
                   </p>
-
-                  {seg.txHash && (
-                    <p className="font-mono text-[9px] break-all">
-                      TX:{" "}
-                      <a
-                        href={`https://sepolia.etherscan.io/tx/${seg.txHash}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-emerald-500 hover:underline"
-                      >
-                        {seg.txHash.slice(0, 20)}...
-                      </a>
-                    </p>
-                  )}
-
-                  {seg.endorsementCount > 0 && (
-                    <p className={`text-[9px] font-mono ${textMuted}`}>
-                      Endorsements: {seg.endorsementCount}/3
-                    </p>
-                  )}
                 </div>
               ))}
             </div>
@@ -667,7 +699,7 @@ export default function VideoDetail() {
         </div>
 
         <p className={`text-center text-[9px] font-mono ${textMuted}`}>
-          TrustStream v1.0 · C2PA v2.2 · Ethereum Sepolia · Hyperledger Fabric · IPFS via Pinata
+          TrustStream v1.0 · C2PA v2.2 · Hyperledger Fabric · IPFS via Pinata
         </p>
       </div>
     </div>
