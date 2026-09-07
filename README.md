@@ -179,7 +179,10 @@ All components are fully theme-aware (dark + light), `api.js` provides complete 
 ```text
 Admin uploads MP4 + (optional) thumbnail image (Clerk authenticated)
   → Thumbnail saved to /public/thumbnails/<videoId>.<ext> (served via /thumbnails/*)
-  → FFmpeg segments MP4 into 2s .ts chunks
+  → FFmpeg segments MP4 into ~2s .ts chunks (target length is
+    HLS_SEGMENT_SECONDS; forced keyframes make the cuts land close to
+    it, but the true length of each chunk is measured via ffprobe
+    afterwards, not assumed - see Segment Duration below)
   → SHA-256 hash per segment
   → Chain hash: SHA-256(currentHash + prevHash)
   → Merkle root computed over all segment hashes
@@ -198,6 +201,15 @@ Admin uploads MP4 + (optional) thumbnail image (Clerk authenticated)
        → RegisterVideoProof on Hyperledger Fabric  ← needs all 3 orgs to endorse
        → Store txId, block number in manifest
 ```
+
+#### Segment duration: why ~2 seconds, and how it's actually enforced
+
+HLS segment length is a direct trade-off in this system, not just a streaming-quality knob: because every segment gets its own hash, chain-hash, forensic sub-score, and C2PA sidecar, **shorter segments give finer-grained tamper localization** (a splice can be pinpointed to within one segment's duration) **at the cost of more per-video overhead** (more IPFS pin calls, more `.c2pa` sidecar files, more Fabric metadata entries). Two seconds was chosen as a reasonable default for that trade-off; it's configurable via `HLS_SEGMENT_SECONDS` if a deployment wants coarser localization with less overhead, or finer localization at the cost of more files.
+
+Two implementation details make this correct rather than approximate:
+
+- **`-hls_time N` is only a target.** FFmpeg cuts HLS segments at the nearest existing keyframe, not at an exact time offset — if the source's GOP (keyframe interval) doesn't divide evenly into `N` seconds, actual segment lengths drift from the target, sometimes significantly. The fix is `-force_key_frames "expr:gte(t,n_forced*N)"`, which inserts an actual keyframe at every `N`-second boundary before segmenting, so the cuts land where requested.
+- **The real duration is still measured, not assumed.** Even with forced keyframes, encoder frame-alignment introduces small drift, and the *final* segment of any video is essentially always shorter than the target (whatever duration remains). Each segment's actual length is probed via `ffprobe -show_entries format=duration` immediately after FFmpeg produces it, and that measured value — not a hardcoded constant — is what gets stored, hashed into the C2PA `c2pa.transcoded` action's `segment_duration` parameter, and summed into the video's reported total duration (`totalDurationSeconds`). A real 7.3-second test upload produced segments of `2.02s, 2.19s, 2.19s, 1.50s` — close to the 2s target for the first three, and correctly short for the last — rather than a video-processing pipeline reporting a fabricated `4 × 2s = 8.0s`.
 
 ### Image Upload Flow (IPFS-ONLY, zero local persistence)
 
@@ -290,7 +302,7 @@ User clicks "View Timeline" on any media card
 | Backend | Node.js, Express 5, multer (single + fields), axios |
 | API Security | `helmet` (security headers), `express-rate-limit` (per-IP throttling), origin-restricted CORS, centralized route-param validation |
 | Index / Catalog | Local JSON manifest catalog (videos + images) |
-| Video Processing | FFmpeg (HLS segmentation, 2s chunks) |
+| Video Processing | FFmpeg (HLS segmentation, ~2s target chunks — configurable via `HLS_SEGMENT_SECONDS`, actual duration measured per segment via `ffprobe`) |
 | Hashing | SHA-256 (Node.js crypto + Web Crypto API) + Chain Hash + Merkle root |
 | Provenance Standard | C2PA v2.2 via `@contentauth/c2pa-node` (real embedded manifests for images + source MP4, ES256/X.509; custom ES256-signed sidecar for video segments) |
 | Decentralized Storage | IPFS via Pinata (segments + C2PA-embedded image + C2PA-embedded source MP4 + metadata JSON) |
@@ -447,6 +459,10 @@ IPFS_GATEWAY=https://gateway.pinata.cloud/ipfs
 # for local dev (falls back to wide-open with a startup warning) - set it
 # before deploying.
 FRONTEND_ORIGIN=http://localhost:5173
+
+# Target HLS segment length in seconds (default 2 if unset). Shorter =
+# finer-grained tamper localization, more IPFS/C2PA overhead per video.
+# HLS_SEGMENT_SECONDS=2
 
 FABRIC_ENABLED=true
 FABRIC_MSP_ID=Org1MSP
@@ -619,7 +635,7 @@ If containers are stopped for any reason, just re-run `./network.sh up createCha
 
 ### View Full Details
 - Click **View Details** on any card
-- **Video detail page:** metadata, Fabric Proof card (endorsements, tamper/dispute, Check Authenticity, ledger history), IPFS, C2PA (segment sidecars + real-embedded source MP4 manifest), per-segment hash table
+- **Video detail page:** a Watch card with a local-cache/direct-from-IPFS playback toggle (see [Storage Summary](#storage-summary)), metadata, Fabric Proof card (endorsements, tamper/dispute, Check Authenticity, ledger history), IPFS, C2PA (segment sidecars + real-embedded source MP4 manifest), per-segment hash table
 - **Image detail page:** metadata, forensics (risk score + 3 modules + notes), Fabric Proof card, IPFS, C2PA (real embedded manifest), tamper/dispute status
 
 ### View Revocation Timeline
@@ -1136,7 +1152,7 @@ Profiling why single-worker latency was so much higher than 5/10-worker latency 
 | Asset | Local | IPFS | Fabric Ledger | Notes |
 | :--- | :--- | :--- | :--- | :--- |
 | **Video original MP4** | ❌ Temp | ❌ | ❌ | Deleted after FFmpeg |
-| **Video HLS segments** | ✅ `public/streams/` | ✅ Pinned | *(covered by Merkle root)* | Local for fast HLS playback |
+| **Video HLS segments** | ✅ `public/streams/` | ✅ Pinned | *(covered by Merkle root)* | Local copy serves live playback (see note below); IPFS copy is independently verifiable and playable via the "🌐 Direct from IPFS" toggle on the video detail page |
 | **Video .c2pa sidecars** | ✅ Next to segments | *(in metadata JSON)* | — | Allows offline verification |
 | **Video metadata JSON** | — | ✅ Pinned | *(cid anchored)* | Sole source for sync recovery |
 | **Video forensic report** | — | ✅ Pinned | *(cid in metadata)* | — |
@@ -1147,6 +1163,20 @@ Profiling why single-worker latency was so much higher than 5/10-worker latency 
 | **Manifest catalog (cache)**| ✅ `data/catalog/*` | — | — | Reproducible from the ledger via sync |
 
 > **Note:** The local manifest catalog is just a cache — every byte of canonical content lives on IPFS, every authoritative status lives on the Fabric ledger.
+
+### Why video HLS segments still keep a local copy (and images don't)
+
+Images are genuinely IPFS-only — the temp upload is deleted unconditionally right after pinning, with zero canonical bytes ever kept on the server. Video segments are the one exception, and it's a measured decision, not an oversight: **HLS playback means fetching dozens of segments in sequence while someone is actively watching**, and public IPFS gateways are not fast enough for that.
+
+Measured directly against Pinata's own gateway (the same one this deployment pins to) for a single 2-second segment:
+
+| Request | Result |
+|---|---|
+| 1st fetch (cold) | **8.07 seconds** for one segment |
+| 2nd–5th fetch (same segment, seconds later) | **HTTP 429 — rate limited** |
+| Local disk read (5×) | **71–95 milliseconds**, every time |
+
+An 8-second stall to load a 2-second clip — followed by the gateway refusing further requests almost immediately — would make real-time playback unusable, not just slower. So the local HLS cache stays as the default serving path (this is a standard pattern: IPFS as the durable, verifiable source of truth; a local/CDN-style cache for latency-sensitive serving — not a compromise unique to this system). What *did* change: every video detail page now has a **"🌐 Direct from IPFS"** toggle that re-points the same player at a playlist built entirely from IPFS gateway URLs (`GET /api/upload/ipfs-playlist/:videoId`), with an explicit warning about the latency — so the decentralization claim is independently checkable by any viewer, on demand, rather than either (a) asserted without proof or (b) forced onto everyone's default viewing experience at the cost of a broken player.
 
 ---
 
@@ -1182,6 +1212,20 @@ The thesis core promise is **"uploaded content cannot be deleted."** This is enf
 ---
 
 ## What's New
+
+### v11 — Verifiable IPFS Playback, Deployment-Breaking URL Fix (September 2026)
+
+* **Measured, not assumed, the local-vs-IPFS video storage trade-off:** prompted by wanting HLS segments to be IPFS-only like images already are, actually benchmarked Pinata's gateway against local disk for segment fetches — 8.07s for a single cold fetch, then `HTTP 429` rate-limiting on every request after. Confirmed that serving live playback directly from a public IPFS gateway would make video unwatchable, not just slower, so the local HLS cache stays as the default serving path. See [Storage Summary](#storage-summary) for the numbers and reasoning.
+* **Added a "🌐 Direct from IPFS" toggle** on the video detail page instead: re-points the existing player at a playlist built entirely from IPFS gateway URLs (the backend's `/api/upload/ipfs-playlist/:videoId` route already existed but nothing in the frontend called it), with an explicit latency warning. Lets anyone independently verify the decentralization claim on demand without it costing every viewer a broken default experience.
+* **Fixed a real spec bug this surfaced:** `/ipfs-playlist/:videoId` hardcoded `EXT-X-TARGETDURATION:2`, which the v10 segment-duration fix immediately invalidated — real segments now measured up to 2.19s, violating RFC 8216's requirement that target duration be `>=` the longest segment. Now computed as `ceil(max(measured segment durations))`.
+* **Fixed a deployment-breaking bug found while auditing this:** `Home.jsx` and `Admin.jsx` hardcoded `http://localhost:3001` for video/thumbnail/playlist URLs in four places, which would have silently broken every video and thumbnail the moment the frontend and backend deployed to different domains. Replaced with a single `API_ORIGIN` constant (derived from `VITE_API_URL`, same variable the API client already used) as the one source of truth.
+
+### v10 — Correct, Configurable HLS Segment Duration (September 2026)
+
+* **Fixed a real correctness bug:** every segment's duration was hardcoded to `2` regardless of what FFmpeg actually produced. `-hls_time N` is only a *target* — FFmpeg cuts at the nearest existing keyframe, so real segment lengths drift whenever the source's GOP structure doesn't divide evenly into `N` seconds, and the final segment of any video is essentially always shorter than the target. This meant every duration shown in the UI (`totalSegments × 2`) was an approximation dressed up as an exact value.
+* **Fix:** `-force_key_frames "expr:gte(t,n_forced*N)"` added to the FFmpeg command so segment cuts land close to the intended boundary, and each segment's *actual* duration is now measured via `ffprobe` immediately after segmenting rather than assumed. The measured value flows through everywhere duration was previously fabricated: the catalog, the C2PA segment sidecar's `segment_duration` parameter, and a new `totalDurationSeconds` field (sum of real per-segment durations) that the frontend now displays instead of computing `totalSegments × 2`.
+* **Made configurable:** target segment length is now `HLS_SEGMENT_SECONDS` (default 2) instead of a magic number in the FFmpeg command string, documented as an explicit trade-off (shorter = finer tamper localization, more per-video IPFS/C2PA overhead; longer = the reverse).
+* **Verified** with a real 7.3-second test upload: measured segment durations came back `2.02s, 2.19s, 2.19s, 1.50s` (summing to the correct `7.90s` total) rather than a fabricated `4 × 2s = 8.0s`.
 
 ### v9 — API Hardening, Feed Search, Public Verification (September 2026)
 

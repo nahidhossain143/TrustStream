@@ -332,7 +332,7 @@ const buildHashAssertion = ({ sha256Hash, filename, fileSize }) => ({
   data: { algorithm: "sha2-256", hash: sha256Hash, name: filename, file_size: fileSize || null, exclusions: [] },
 });
 
-const buildSegmentActionsAssertion = ({ createdAt, videoId, segmentIndex, originalFilename }) => ({
+const buildSegmentActionsAssertion = ({ createdAt, videoId, segmentIndex, originalFilename, durationSeconds }) => ({
   label: "c2pa.actions",
   data: {
     actions: [
@@ -340,7 +340,9 @@ const buildSegmentActionsAssertion = ({ createdAt, videoId, segmentIndex, origin
       {
         action: "c2pa.transcoded", when: createdAt, softwareAgent: "FFmpeg/6.0",
         description: `Original MP4 transcoded to MPEG-2 TS HLS segment ${segmentIndex} using FFmpeg`,
-        parameters: { input_format: "video/mp4", output_format: "video/MP2T", segment_duration: "2s", video_codec: "libx264", audio_codec: "aac", hls_type: "VOD", source_filename: originalFilename || null },
+        // Measured via ffprobe after segmenting, not assumed - FFmpeg's
+        // -hls_time is only a target duration (see upload.routes.js).
+        parameters: { input_format: "video/mp4", output_format: "video/MP2T", segment_duration: typeof durationSeconds === "number" ? `${durationSeconds.toFixed(2)}s` : null, video_codec: "libx264", audio_codec: "aac", hls_type: "VOD", source_filename: originalFilename || null },
       },
       { action: "c2pa.published", when: new Date().toISOString(), softwareAgent: C2PA_CLAIM_GENERATOR, description: "Segment published to TrustStream decentralized news platform", parameters: { platform: "TrustStream", video_id: videoId, segment_index: segmentIndex, distribution: "HLS streaming + IPFS + Hyperledger Fabric" } },
     ],
@@ -377,10 +379,10 @@ const buildChainHashAssertion = ({ videoId, segmentIndex, sha256Hash, chainHash,
   },
 });
 
-const buildManifest = ({ videoId, segmentIndex, filename, sha256Hash, chainHash, ipfsCid, title, description, createdAt, totalSegments, fileSize, originalFilename }) => {
+const buildManifest = ({ videoId, segmentIndex, filename, sha256Hash, chainHash, ipfsCid, title, description, createdAt, totalSegments, fileSize, originalFilename, durationSeconds }) => {
   const assertions = [
     buildHashAssertion({ sha256Hash, filename, fileSize }),
-    buildSegmentActionsAssertion({ createdAt, videoId, segmentIndex, originalFilename }),
+    buildSegmentActionsAssertion({ createdAt, videoId, segmentIndex, originalFilename, durationSeconds }),
     buildCreativeWorkAssertion({ mediaId: videoId, title: `${title} - Segment ${segmentIndex}`, description: description || `HLS segment ${segmentIndex} of ${totalSegments} from "${title}"`, createdAt, mimeType: "video/MP2T", schemaType: "VideoObject" }),
     buildTimestampAssertion({ createdAt, mediaId: videoId, identifier: segmentIndex, sha256Hash }),
     buildConsortiumAssertion({ mediaId: videoId, identifier: segmentIndex, ipfsCid }),
@@ -469,12 +471,12 @@ const verifyManifestSignature = (signedManifest) => {
 //  GENERATE + SAVE - VIDEO SEGMENT
 // =================================================================
 
-const generateSegmentManifest = async ({ videoId, segmentIndex, filename, localPath, sha256Hash, chainHash, ipfsCid, title, description, createdAt, totalSegments, originalFilename }) => {
+const generateSegmentManifest = async ({ videoId, segmentIndex, filename, localPath, sha256Hash, chainHash, ipfsCid, title, description, createdAt, totalSegments, originalFilename, durationSeconds }) => {
   try {
     let fileSize = null;
     try { fileSize = fs.statSync(localPath).size; } catch {}
 
-    const manifest = buildManifest({ videoId, segmentIndex, filename, sha256Hash, chainHash, ipfsCid: ipfsCid || null, title, description, createdAt, totalSegments, fileSize, originalFilename });
+    const manifest = buildManifest({ videoId, segmentIndex, filename, sha256Hash, chainHash, ipfsCid: ipfsCid || null, title, description, createdAt, totalSegments, fileSize, originalFilename, durationSeconds });
     const signedManifest = signManifest(manifest);
 
     const sidecarPath = localPath.replace(/\.ts$/, ".c2pa");
@@ -506,6 +508,7 @@ const generateAllManifests = async (videoId, segments, title, createdAt, descrip
           localPath: seg.localPath, sha256Hash: seg.sha256Hash,
           chainHash: seg.chainHash, ipfsCid: seg.ipfsCid || null,
           title, description, createdAt, totalSegments: totalSegments || segments.length,
+          durationSeconds: seg.durationSeconds,
         })
       )
     );

@@ -26,7 +26,9 @@ const rateLimit = require("express-rate-limit");
 const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
-const { exec } = require("child_process");
+const { exec, execFile } = require("child_process");
+const { promisify } = require("util");
+const execFileAsync = promisify(execFile);
 
 // --- Directory Setup ---------------------------------------------
 const storageRoot = process.env.STORAGE_PATH || path.join(__dirname, "../../");
@@ -276,6 +278,32 @@ const runFfmpeg = (command) =>
     exec(command, (err) => (err ? reject(err) : resolve()));
   });
 
+// Target HLS segment length. Shorter = finer-grained tamper localization
+// (each segment gets its own hash/chain-hash/forensic sub-score/C2PA
+// sidecar) at the cost of more IPFS pins and sidecar files per video;
+// longer = less overhead, coarser localization. Configurable rather than
+// a magic number buried in the ffmpeg command.
+const HLS_SEGMENT_SECONDS = Number(process.env.HLS_SEGMENT_SECONDS) || 2;
+
+// Real duration of one segment file, in seconds. `-hls_time` is only a
+// *target* - FFmpeg cuts at the nearest existing keyframe, so actual
+// segment length drifts from the target whenever the source's keyframe
+// interval doesn't divide evenly into it, and the final segment of any
+// video is essentially always shorter. Probing the real value (rather
+// than assuming every segment is exactly HLS_SEGMENT_SECONDS) is what
+// makes duration displays and metadata actually correct.
+const probeSegmentDuration = async (filePath) => {
+  try {
+    const { stdout } = await execFileAsync("ffprobe", [
+      "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", filePath,
+    ]);
+    const seconds = parseFloat(stdout);
+    return Number.isFinite(seconds) ? seconds : HLS_SEGMENT_SECONDS;
+  } catch {
+    return HLS_SEGMENT_SECONDS;
+  }
+};
+
 // =================================================================
 //  VIDEO SUMMARY HELPERS
 // =================================================================
@@ -308,6 +336,10 @@ const buildVideoSummary = (manifest) => ({
   title: manifest.title,
   description: manifest.description,
   totalSegments: manifest.totalSegments,
+  // Sum of each segment's *measured* duration (see probeSegmentDuration) -
+  // not totalSegments * a fixed constant, since -hls_time is only a
+  // target and the final segment is virtually always shorter than it.
+  totalDurationSeconds: (manifest.segments || []).reduce((sum, s) => sum + (s.durationSeconds || 0), 0),
   playlistUrl: manifest.playlistUrl,
   createdAt: manifest.createdAt,
   registeredAt: manifest.createdAt,
@@ -950,7 +982,10 @@ router.post("/", uploadLimiter, videoUpload, async (req, res) => {
   }
 
   const playlistPath = path.join(outputFolder, "playlist.m3u8");
-  const ffmpegCmd = `ffmpeg -i "${inputPath}" -c:v libx264 -c:a aac -hls_time 2 -hls_playlist_type vod -hls_segment_filename "${outputFolder}/seg_%03d.ts" "${playlistPath}"`;
+  // -force_key_frames forces an actual keyframe at every N-second boundary
+  // so -hls_time's cuts land where requested, instead of drifting to
+  // wherever the encoder's own GOP structure happens to place keyframes.
+  const ffmpegCmd = `ffmpeg -i "${inputPath}" -c:v libx264 -c:a aac -force_key_frames "expr:gte(t,n_forced*${HLS_SEGMENT_SECONDS})" -hls_time ${HLS_SEGMENT_SECONDS} -hls_playlist_type vod -hls_segment_filename "${outputFolder}/seg_%03d.ts" "${playlistPath}"`;
 
   try {
     await runFfmpeg(ffmpegCmd);
@@ -962,7 +997,10 @@ router.post("/", uploadLimiter, videoUpload, async (req, res) => {
     for (let i = 0; i < files.length; i++) {
       const filename = files[i];
       const localPath = path.join(outputFolder, filename);
-      const sha256Hash = await hashFile(localPath);
+      const [sha256Hash, durationSeconds] = await Promise.all([
+        hashFile(localPath),
+        probeSegmentDuration(localPath),
+      ]);
       const chainHash = crypto
         .createHash("sha256")
         .update(Buffer.from(sha256Hash + (prevHash || ""), "hex"))
@@ -970,7 +1008,7 @@ router.post("/", uploadLimiter, videoUpload, async (req, res) => {
 
       segments.push({
         index: i, filename, localPath, sha256Hash, chainHash,
-        durationSeconds: 2, ipfsCid: null, ipfsUrl: null,
+        durationSeconds, ipfsCid: null, ipfsUrl: null,
         c2paSigned: false, c2paManifestHash: null, c2paInstanceId: null,
         c2paSignedAt: null, c2paSidecarPath: null,
       });
@@ -1129,8 +1167,14 @@ router.get("/ipfs-playlist/:videoId", async (req, res) => {
 
   if (!sourceSegments.length) return res.status(404).send("IPFS playlist not available yet");
 
+  // Per RFC 8216 §4.3.3.1, EXT-X-TARGETDURATION must be an integer >= the
+  // longest segment's actual duration - segments only *target*
+  // HLS_SEGMENT_SECONDS (see the Segment Duration note in the README),
+  // so this has to be computed from what was really measured, not assumed.
+  const targetDuration = Math.max(2, Math.ceil(Math.max(...sourceSegments.map((s) => s.durationSeconds || 2))));
+
   const lines = [
-    "#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-TARGETDURATION:2",
+    "#EXTM3U", "#EXT-X-VERSION:3", `#EXT-X-TARGETDURATION:${targetDuration}`,
     "#EXT-X-PLAYLIST-TYPE:VOD", "#EXT-X-MEDIA-SEQUENCE:0",
   ];
   for (const seg of sourceSegments) {

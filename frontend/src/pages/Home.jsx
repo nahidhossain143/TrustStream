@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { feedAPI } from "../services/api";
+import { feedAPI, API_ORIGIN } from "../services/api";
 import Navbar from "../components/Navbar";
 import VideoPlayer from "../components/VideoPlayer";
 import { useTheme } from "../context/ThemeContext";
@@ -48,8 +48,8 @@ function VideoModal({ item, onClose, isDark }) {
           <div className="w-full h-full max-w-[1600px]">
             <VideoPlayer
               videoId={item.videoId || item.id}
-              playlistUrl={`http://localhost:3001${item.playlistUrl}`}
-              posterUrl={item.thumbnailUrl ? `http://localhost:3001${item.thumbnailUrl}` : undefined}
+              playlistUrl={`${API_ORIGIN}${item.playlistUrl}`}
+              posterUrl={item.thumbnailUrl ? `${API_ORIGIN}${item.thumbnailUrl}` : undefined}
               onVerify={() => {}}
             />
           </div>
@@ -58,7 +58,7 @@ function VideoModal({ item, onClose, isDark }) {
           <div className="min-w-0">
             <p className="font-semibold text-base truncate text-white">{item.title}</p>
             <p className="text-xs font-mono mt-0.5 text-neutral-400">
-              {item.totalSegments} segments · {formatDuration((item.totalSegments || 0) * 2)}
+              {item.totalSegments} segments · {formatDuration(item.totalDurationSeconds || 0)}
             </p>
           </div>
           <button onClick={() => { onClose(); navigate(`/video/${item.videoId || item.id}`); }}
@@ -157,7 +157,7 @@ function VideoPostCard({ item, onPlay, isDark }) {
         {/* Thumbnail (poster) — falls back to placeholder grid if not uploaded */}
         {item.thumbnailUrl ? (
           <img
-            src={`http://localhost:3001${item.thumbnailUrl}`}
+            src={`${API_ORIGIN}${item.thumbnailUrl}`}
             alt={item.title}
             className="absolute inset-0 w-full h-full object-cover group-hover:scale-[1.02] transition-transform duration-300"
             loading="lazy"
@@ -176,7 +176,7 @@ function VideoPostCard({ item, onPlay, isDark }) {
           </div>
         </div>
         <div className="absolute bottom-4 right-4 z-20">
-          <span className="bg-black/70 backdrop-blur-sm text-white text-xs font-mono font-bold px-2.5 py-1 rounded-md">{formatDuration((item.totalSegments || 0) * 2)}</span>
+          <span className="bg-black/70 backdrop-blur-sm text-white text-xs font-mono font-bold px-2.5 py-1 rounded-md">{formatDuration(item.totalDurationSeconds || 0)}</span>
         </div>
         <div className="absolute bottom-4 left-4 z-20">
           <span className="bg-black/60 text-neutral-300 text-[10px] font-mono px-2.5 py-1 rounded-md">{item.totalSegments} segments</span>
