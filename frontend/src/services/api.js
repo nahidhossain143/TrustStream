@@ -1,9 +1,14 @@
 import axios from "axios";
 
+// Backend origin (no /api suffix) - for static assets served directly by
+// Express (/streams/*, /thumbnails/*), as opposed to the JSON API below.
+// Deliberately the single source of truth for this: previously several
+// pages hardcoded "http://localhost:3001" directly, which silently broke
+// once the frontend and backend deployed to different domains.
+export const API_ORIGIN = import.meta.env.VITE_API_URL || "http://localhost:3001";
+
 const api = axios.create({
-  baseURL: import.meta.env.VITE_API_URL
-    ? `${import.meta.env.VITE_API_URL}/api`
-    : "http://localhost:3001/api",
+  baseURL: `${API_ORIGIN}/api`,
 });
 
 export default api;

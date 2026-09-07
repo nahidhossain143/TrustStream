@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { Link, useParams, useNavigate } from "react-router-dom";
-import api from "../services/api";
+import api, { API_ORIGIN } from "../services/api";
 import Navbar from "../components/Navbar";
 import ForensicPanel from "../components/ForensicPanel";
+import VideoPlayer from "../components/VideoPlayer";
 import { useTheme } from "../context/ThemeContext";
 
 const IPFS_GATEWAY = "https://gateway.pinata.cloud/ipfs";
@@ -124,6 +125,9 @@ export default function VideoDetail() {
 
   const [tamperReporting, setTamperReporting] = useState(false);
   const [clearingDispute, setClearingDispute] = useState(false);
+
+  const [playbackSource, setPlaybackSource] = useState("local"); // "local" | "ipfs"
+  const [showPlayer, setShowPlayer] = useState(false);
 
   const reportTamper = () => {
     setTamperReporting(true);
@@ -285,13 +289,58 @@ export default function VideoDetail() {
 
         <div className={`rounded-2xl border overflow-hidden ${cardBg}`}>
           <div className="px-6 py-5">
+            <SectionHeader icon="▶" title="Watch" color="blue" isDark={isDark} />
+            <p className={`text-[11px] mb-3 ${textMuted}`}>
+              Default playback streams from this server's local HLS cache (fast, reliable). The same content
+              is independently pinned to IPFS — switch sources below to prove it's really there. Public IPFS
+              gateways are meaningfully slower and rate-limit aggressively (a real segment fetch took ~8s and
+              was rate-limited on repeat requests when we measured it), so expect buffering — that's the honest
+              cost of true decentralization, not a bug.
+            </p>
+            <div className={`flex gap-1 rounded-lg p-0.5 w-fit mb-4 ${isDark ? "bg-neutral-800" : "bg-neutral-100"}`}>
+              {[
+                { key: "local", label: "⚡ Local Cache" },
+                { key: "ipfs", label: "🌐 Direct from IPFS" },
+              ].map(({ key, label }) => (
+                <button
+                  key={key}
+                  onClick={() => { setPlaybackSource(key); setShowPlayer(true); }}
+                  className={`text-[11px] font-mono px-3 py-1.5 rounded-md transition-all ${
+                    showPlayer && playbackSource === key
+                      ? (isDark ? "bg-white/10 text-white" : "bg-white text-neutral-900 shadow-sm")
+                      : textMuted
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {showPlayer && (
+              <div className="rounded-xl overflow-hidden bg-black" style={{ aspectRatio: "16/9" }}>
+                <VideoPlayer
+                  videoId={manifest.videoId}
+                  playlistUrl={
+                    playbackSource === "ipfs"
+                      ? `${API_ORIGIN}/api/upload/ipfs-playlist/${manifest.videoId}`
+                      : `${API_ORIGIN}${manifest.playlistUrl}`
+                  }
+                  posterUrl={manifest.thumbnailUrl ? `${API_ORIGIN}${manifest.thumbnailUrl}` : undefined}
+                  onVerify={() => {}}
+                />
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className={`rounded-2xl border overflow-hidden ${cardBg}`}>
+          <div className="px-6 py-5">
             <SectionHeader icon="📄" title="Video Metadata" color="blue" isDark={isDark} />
             <InfoRow label="Video ID" value={manifest.videoId} mono isDark={isDark} />
             <InfoRow label="Title" value={manifest.title} isDark={isDark} />
             <InfoRow label="Description" value={manifest.description} isDark={isDark} />
             <InfoRow label="Created At" value={new Date(manifest.createdAt).toLocaleString()} isDark={isDark} />
-            <InfoRow label="Total Segments" value={`${manifest.totalSegments} × 2s`} isDark={isDark} />
-            <InfoRow label="Duration" value={`${manifest.totalSegments * 2}s`} isDark={isDark} />
+            <InfoRow label="Total Segments" value={manifest.totalSegments} isDark={isDark} />
+            <InfoRow label="Duration" value={`${(manifest.totalDurationSeconds || 0).toFixed(1)}s`} isDark={isDark} />
             <InfoRow label="Status" value={manifest.status} isDark={isDark} />
           </div>
         </div>

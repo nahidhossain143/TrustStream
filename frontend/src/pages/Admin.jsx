@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { UserButton, useUser } from "@clerk/clerk-react";
-import api, { imageAPI } from "../services/api";
+import api, { imageAPI, API_ORIGIN } from "../services/api";
 import Navbar from "../components/Navbar";
 import { useTheme } from "../context/ThemeContext";
 
@@ -428,7 +428,7 @@ function VideoUploadPanel({ isDark }) {
               ].map(({ label, value, mono }) => (
                 <ResultRow key={label} label={label} value={value} mono={mono} isDark={isDark} />
               ))}
-              <ResultRow label="Playlist" value={result.playlistUrl} mono link={`http://localhost:3001${result.playlistUrl}`} isDark={isDark} />
+              <ResultRow label="Playlist" value={result.playlistUrl} mono link={`${API_ORIGIN}${result.playlistUrl}`} isDark={isDark} />
               {(bgStatus?.metadataCid || result.metadataCid) && (
                 <ResultRow label="IPFS CID" value={bgStatus?.metadataCid || result.metadataCid} mono link={`https://gateway.pinata.cloud/ipfs/${bgStatus?.metadataCid || result.metadataCid}`} isDark={isDark} />
               )}
