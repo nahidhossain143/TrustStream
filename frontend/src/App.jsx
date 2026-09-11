@@ -7,7 +7,9 @@ import VideoDetail from "./pages/VideoDetail";
 import ImageDetail from "./pages/ImageDetail";
 import TimelinePage from "./pages/TimeLinePage";
 import FabricAudit from "./pages/FabricAudit";
-import PublicVerify from "./pages/PublicVerify";
+import Analytics from "./pages/Analytics";
+import HowItWorks from "./pages/HowItWorks";
+import OrgPortal from "./pages/OrgPortal";
 import { ThemeProvider } from "./context/ThemeContext";
 
 const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -72,13 +74,22 @@ function App() {
         <BrowserRouter>
           <Routes>
             <Route path="/" element={<Home />} />
+            <Route path="/how-it-works" element={<HowItWorks />} />
             <Route path="/video/:videoId" element={<VideoDetail />} />
             <Route path="/image/:imageId" element={<ImageDetail />} />
             <Route path="/timeline/:kind/:id" element={<TimelinePage />} />
             <Route path="/timeline/:id" element={<TimelinePage />} />
             <Route path="/fabric-audit" element={<FabricAudit />} />
-            <Route path="/verify" element={<PublicVerify />} />
+            <Route path="/analytics" element={<Analytics />} />
             <Route path="/admin" element={<ProtectedAdmin />} />
+            <Route
+              path="/broadcaster"
+              element={<OrgPortal org="broadcaster" orgLabel="Broadcaster" accentColor="#1baf7a" nextStageLabel="Auditor review" />}
+            />
+            <Route
+              path="/auditor"
+              element={<OrgPortal org="auditor" orgLabel="Auditor" accentColor="#4a3aa7" nextStageLabel="published" />}
+            />
             <Route
               path="*"
               element={

@@ -33,12 +33,13 @@
 - [Hyperledger Fabric Network Topology](#hyperledger-fabric-network-topology)
 - [Fabric Chaincode Reference](#fabric-chaincode-reference)
 - [Tamper Reports & Dispute Governance](#tamper-reports--dispute-governance)
+- [Sequential Approval Workflow](#sequential-approval-workflow)
 - [C2PA Implementation](#c2pa-implementation)
-- [Public Verification (No Login Required)](#public-verification-no-login-required)
 - [Forensics (AI-Free)](#forensics-ai-free)
 - [Forensic Analysis Modules](#forensic-analysis-modules)
 - [Revocation Timeline Visual](#revocation-timeline-visual)
 - [Fabric Audit Dashboard](#fabric-audit-dashboard)
+- [Analytics Dashboard](#analytics-dashboard)
 - [Performance Benchmarking (Hyperledger Caliper)](#performance-benchmarking-hyperledger-caliper)
 - [IPFS Info](#ipfs-info)
 - [Storage Summary](#storage-summary)
@@ -56,9 +57,9 @@ TrustStream is a **full Facebook-style decentralized live news streaming platfor
 
 A genuine 3-organization Fabric network, not a single-node stub:
 
-- **Org1 (NewsAgency)** — submits and registers media
-- **Org2 (Broadcaster)** — endorsing peer
-- **Org3 (Auditor)** — endorsing peer, and the only org that can clear a disputed status back to active
+- **Org1 (NewsAgency)** — submits and registers media (endorsing peer; only Org1MSP may call `RegisterVideoProof`/`RegisterImageProof`)
+- **Org2 (Broadcaster)** — endorsing peer, and the first application-level reviewer: only Org2MSP may call `ApproveByBroadcaster`/`RejectByBroadcaster` on a `pending_broadcaster` item
+- **Org3 (Auditor)** — endorsing peer, the final reviewer (`ApproveByAuditor`/`RejectByAuditor` move `pending_auditor` → `active`/`rejected`), and the only org that can clear a disputed status back to active
 - Every write (registration, revocation, tamper report, dispute clearance) requires the channel's `AND(Org1MSP.peer, Org2MSP.peer, Org3MSP.peer)` endorsement policy — **unanimous 3-of-3**, not a majority
 - `truststreamcc` chaincode (JavaScript) is the single source of truth for on-chain state — no per-segment blockchain transactions, one registration per video/image anchored by a Merkle root over all segments
 - `backend/src/services/fabric.service.js` connects via Fabric Gateway + gRPC; submits proofs, verifies, revokes, reports tamper, clears disputes, reads history, runs rich queries, and maintains a long-lived chaincode event listener
@@ -67,11 +68,12 @@ A genuine 3-organization Fabric network, not a single-node stub:
 
 `truststreamcc` implements the full consortium governance model directly in chaincode:
 
-- `RegisterVideoProof`, `RegisterImageProof`, `EndorseMedia`, `GetMediaProof`
-- `ReportTamper`, `ClearDispute` — 2-of-3 org tamper threshold (excluding the registering org's own report) auto-flips status to `disputed`; only the Auditor (Org3MSP) can clear it back to `active`
-- `RevokeMedia`, `GetMediaHistory`, `QueryByOrg`, `QueryByMediaType`, `QueryRevoked`
-- `VerifyVideoProof`, `VerifyImageProof`
-- **No delete function anywhere — only status flips** (`active` → `disputed` → `active`, or → `revoked`), naturally enforcing the thesis core promise: *"uploaded content cannot be deleted"*
+- `RegisterVideoProof`, `RegisterImageProof`, `EndorseMedia`, `GetMediaProof` — registration (Org1MSP-only) starts a proof at `pending_broadcaster`, not `active`
+- `ApproveByBroadcaster`/`RejectByBroadcaster` (Org2MSP-only), `ApproveByAuditor`/`RejectByAuditor` (Org3MSP-only) — the sequential approval chain; see [Sequential Approval Workflow](#sequential-approval-workflow)
+- `ReportTamper`, `ClearDispute` — 2-of-3 org tamper threshold (excluding the registering org's own report) auto-flips status to `disputed`; only the Auditor (Org3MSP) can clear it back to `active`; only valid once a proof has reached `active` or `disputed`
+- `RevokeMedia`, `GetMediaHistory`, `QueryByOrg`, `QueryByMediaType`, `QueryRevoked`, `QueryPendingBroadcaster`, `QueryPendingAuditor`
+- `VerifyVideoProof`, `VerifyImageProof` — only return `valid: true` once `status === "active"`
+- **No delete function anywhere — only status flips** (`pending_broadcaster` → `pending_auditor` → `active` → `disputed` → `active`, or → `revoked`/`rejected`), naturally enforcing the thesis core promise: *"uploaded content cannot be deleted"*
 
 ### Backend
 
@@ -199,7 +201,13 @@ Admin uploads MP4 + (optional) thumbnail image (Clerk authenticated)
        → Upload forensic report JSON to IPFS
        → Upload video metadata JSON (with C2PA + forensics) to IPFS
        → RegisterVideoProof on Hyperledger Fabric  ← needs all 3 orgs to endorse
+         (Org1MSP/NewsAgency only - writes status: "pending_broadcaster")
        → Store txId, block number in manifest
+  → [Not yet trustworthy/public]: sits in the Broadcaster queue until approved
+    → Broadcaster approves (/broadcaster) → status: "pending_auditor"
+      → Auditor approves (/auditor) → status: "active"  (now verifiable, shown
+        on the public feed as trusted; either org can instead reject, which
+        sets status: "rejected" and ends the workflow)
 ```
 
 #### Segment duration: why ~2 seconds, and how it's actually enforced
@@ -231,7 +239,13 @@ Admin uploads JPG / PNG / WebP (Clerk authenticated)
        → Recompute sha256Hash from the embedded bytes (they're now canonical)
        → Pin metadata JSON to IPFS (includes forensics)
        → RegisterImageProof on Hyperledger Fabric  ← needs all 3 orgs to endorse
+         (Org1MSP/NewsAgency only - writes status: "pending_broadcaster")
        → UNCONDITIONALLY unlink the temp file
+  → [Not yet trustworthy/public]: sits in the Broadcaster queue until approved
+    → Broadcaster approves (/broadcaster) → status: "pending_auditor"
+      → Auditor approves (/auditor) → status: "active"  (now verifiable, shown
+        on the public feed as trusted; either org can instead reject, which
+        sets status: "rejected" and ends the workflow)
   → Final state: image bytes (with embedded C2PA) only on IPFS,
     hash anchored on the Fabric ledger, manifest cache reproducible from chain
 ```
@@ -477,6 +491,29 @@ FABRIC_TLS_CERT_PATH=//wsl.localhost/<distro>/home/<username>/fabric-project/fab
 FABRIC_CERT_PATH=//wsl.localhost/<distro>/home/<username>/fabric-project/fabric-samples/test-network/organizations/peerOrganizations/org1.example.com/users/Admin@org1.example.com/msp/signcerts/cert.pem
 FABRIC_KEY_DIR=//wsl.localhost/<distro>/home/<username>/fabric-project/fabric-samples/test-network/organizations/peerOrganizations/org1.example.com/users/Admin@org1.example.com/msp/keystore
 
+# Broadcaster (Org2MSP) and Auditor (Org3MSP) identities - needed for the
+# sequential approval workflow's /broadcaster and /auditor portals (see
+# Sequential Approval Workflow below). Same pattern as org1 above, just
+# pointed at org2.example.com / org3.example.com and their own peer ports.
+FABRIC_ORG2_MSP_ID=Org2MSP
+FABRIC_ORG2_PEER_ENDPOINT=localhost:9051
+FABRIC_ORG2_PEER_HOST_ALIAS=peer0.org2.example.com
+FABRIC_ORG2_TLS_CERT_PATH=//wsl.localhost/<distro>/home/<username>/fabric-project/fabric-samples/test-network/organizations/peerOrganizations/org2.example.com/peers/peer0.org2.example.com/tls/ca.crt
+FABRIC_ORG2_CERT_PATH=//wsl.localhost/<distro>/home/<username>/fabric-project/fabric-samples/test-network/organizations/peerOrganizations/org2.example.com/users/Admin@org2.example.com/msp/signcerts/cert.pem
+FABRIC_ORG2_KEY_DIR=//wsl.localhost/<distro>/home/<username>/fabric-project/fabric-samples/test-network/organizations/peerOrganizations/org2.example.com/users/Admin@org2.example.com/msp/keystore
+
+FABRIC_ORG3_MSP_ID=Org3MSP
+FABRIC_ORG3_PEER_ENDPOINT=localhost:11051
+FABRIC_ORG3_PEER_HOST_ALIAS=peer0.org3.example.com
+FABRIC_ORG3_TLS_CERT_PATH=//wsl.localhost/<distro>/home/<username>/fabric-project/fabric-samples/test-network/organizations/peerOrganizations/org3.example.com/peers/peer0.org3.example.com/tls/ca.crt
+FABRIC_ORG3_CERT_PATH=//wsl.localhost/<distro>/home/<username>/fabric-project/fabric-samples/test-network/organizations/peerOrganizations/org3.example.com/users/Admin@org3.example.com/msp/signcerts/cert.pem
+FABRIC_ORG3_KEY_DIR=//wsl.localhost/<distro>/home/<username>/fabric-project/fabric-samples/test-network/organizations/peerOrganizations/org3.example.com/users/Admin@org3.example.com/msp/keystore
+
+# Shared passcodes gating the Broadcaster/Auditor portals - a simple access
+# control, not a full per-user auth system (see Sequential Approval Workflow).
+BROADCASTER_PORTAL_PASSCODE=change-me
+AUDITOR_PORTAL_PASSCODE=change-me
+
 # Optional - only needed if you want the C2PA signing identity somewhere
 # other than backend/certs/c2pa/ (generated by generate-c2pa-cert.sh).
 # C2PA_CERT_CHAIN_PATH=./certs/c2pa/signing-chain.pem
@@ -617,6 +654,15 @@ If containers are stopped for any reason, just re-run `./network.sh up createCha
 4. Click **Upload & Authenticate Image**
 5. Pipeline panel (5 steps): Upload → Hash → C2PA → IPFS → Fabric
 6. After completion, the temp local file is unconditionally deleted — only IPFS + the Fabric ledger hold the canonical content
+7. The upload is **not** live yet — it's registered on-chain with `status: "pending_broadcaster"` and sits in the Broadcaster's queue until reviewed (see below)
+
+### Review & Approve (Broadcaster / Auditor)
+1. Go to `http://localhost:5173/broadcaster` (or `/auditor`)
+2. Enter the org's passcode (`BROADCASTER_PORTAL_PASSCODE` / `AUDITOR_PORTAL_PASSCODE` in `backend/.env`) — this is a lightweight portal gate, separate from the real Fabric identity the backend uses to sign the actual chaincode transaction
+3. The queue lists every item currently waiting on that org: thumbnail, title, description, media type, upload time
+4. **Approve** moves a video/image to the next stage (`pending_broadcaster` → `pending_auditor` on the Broadcaster portal, `pending_auditor` → `active` on the Auditor portal) — each call is submitted to the chaincode under that org's own Fabric identity (`Org2MSP`/`Org3MSP`), not a shared or spoofable role
+5. **Reject** (with an optional reason) ends the workflow at `rejected` — it never reaches the other org or the public feed
+6. Only after the Auditor approves does the item become `active`: verifiable via `VerifyVideoProof`/`VerifyImageProof`, and visible on the public feed
 
 ### Browse the Feed (Home)
 1. Go to `http://localhost:5173`
@@ -626,12 +672,6 @@ If containers are stopped for any reason, just re-run `./network.sh up createCha
 5. Click a video card → fullscreen modal player (auto-verifies each segment, uses uploaded thumbnail as poster)
 6. Click an image card → fullscreen lightbox (zoomable, IPFS-served)
 7. Each card shows: avatar, time-ago, status pills (Fabric / C2PA / IPFS / Disputed), title, description
-
-### Verify Any File (No Login)
-1. Click **🔍 Verify Content** in the navbar, or go to `http://localhost:5173/verify`
-2. Drag & drop (or browse for) any JPG / PNG / WebP / MP4 — up to 100 MB, no account needed
-3. Shows whether it's genuine TrustStream-registered content, which record it matches (with a link to full details), and the underlying C2PA validation detail (signer, algorithm, trust state)
-4. See [Public Verification](#public-verification-no-login-required) for how the two-tier check (embedded-manifest vs. hash fallback) works
 
 ### View Full Details
 - Click **View Details** on any card
@@ -699,7 +739,7 @@ If containers are stopped for any reason, just re-run `./network.sh up createCha
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/api/upload/feed` | Mixed video + image feed (newest-first), server-side search + filter + pagination — drives the FB-style home page. Query params: `search` (title/description substring), `mediaType` (`all`\|`video`\|`image`), `status` (`all`\|`verified`\|`disputed`\|`revoked`), `page`, `limit` (max 50). Returns `{ total, page, totalPages, hasMore, counts, feed }` |
-| `POST` | `/api/upload/public-verify` | **No login required.** Upload any image/MP4/`.ts` segment; re-runs the real C2PA validation directly against the uploaded bytes (works even on a file never re-uploaded to TrustStream), falling back to exact SHA-256 matching for non-embeddable content. Returns `{ matched, matchType, sha256Hash, c2pa, match }` |
+| `GET` | `/api/upload/stats` | Platform-wide aggregates for the [Analytics Dashboard](#analytics-dashboard) — verdict breakdown, risk-score histogram, per-day upload counts, Fabric status breakdown, all computed live from the catalog |
 | `POST` | `/api/upload/sync-from-blockchain` | Restore both videos AND images from the Fabric ledger + IPFS |
 | `POST` | `/api/upload/:videoId/revoke` | Revoke a video (status flip, chaincode `RevokeMedia`) |
 | `POST` | `/api/upload/images/:imageId/revoke` | Revoke an image |
@@ -713,6 +753,21 @@ If containers are stopped for any reason, just re-run `./network.sh up createCha
 | `GET` | `/api/upload/blockchain/fabric-events` | **SSE stream** of `MediaRegistered` / `MediaRevoked` / `MediaDisputed` / `MediaDisputeCleared` |
 | `GET` | `/api/upload/blockchain/fabric-history/:kind/:id` | Full ledger history of one record |
 | `GET` | `/api/upload/blockchain/fabric-query` | Rich query — `?by=org&value=Org2MSP`, `?by=type&value=video`, `?by=revoked` |
+
+### Sequential Approval Workflow (Broadcaster / Auditor portals)
+
+All require `X-Org-Passcode` header except `/login`, which takes the passcode in the body. See [Sequential Approval Workflow](#sequential-approval-workflow).
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/upload/broadcaster/login` | `{ passcode }` → `{ ok: true }` or 401 |
+| `GET` | `/api/upload/broadcaster/pending` | Items with `status: "pending_broadcaster"`, enriched with local catalog data |
+| `POST` | `/api/upload/broadcaster/:mediaType/:mediaId/approve` | Submits `ApproveByBroadcaster` as Org2MSP → `pending_auditor` |
+| `POST` | `/api/upload/broadcaster/:mediaType/:mediaId/reject` | `{ reason }` → Submits `RejectByBroadcaster` as Org2MSP → `rejected` |
+| `POST` | `/api/upload/auditor/login` | Same shape, `AUDITOR_PORTAL_PASSCODE` |
+| `GET` | `/api/upload/auditor/pending` | Items with `status: "pending_auditor"` |
+| `POST` | `/api/upload/auditor/:mediaType/:mediaId/approve` | Submits `ApproveByAuditor` as Org3MSP → `active` |
+| `POST` | `/api/upload/auditor/:mediaType/:mediaId/reject` | `{ reason }` → Submits `RejectByAuditor` as Org3MSP → `rejected` |
 
 ### Static
 
@@ -747,8 +802,6 @@ could walk the catalog directory's path upward via `../` segments and cause the 
 |---|---|---|---|
 | Whole API (`/api/upload/*`) | 15 min | 600 req/IP | Generous enough for feed polling, detail pages, and per-segment verification during normal HLS playback, while still bounding a single client |
 | `POST /api/upload` and `POST /api/upload/image` | 60 min | 20 req/IP | Each call triggers FFmpeg, forensic analysis, IPFS pinning, and a Fabric ledger write — expensive enough to need a tighter ceiling |
-| `POST /api/upload/public-verify` | 15 min | 15 req/IP | Public, unauthenticated endpoint — tightest limit since anyone on the internet can reach it |
-
 ### Other hardening
 
 - **`helmet`** — standard security headers (`X-Content-Type-Options`, `X-Frame-Options`, HSTS, etc). Content-Security-Policy is deliberately disabled (this is a JSON API + static file server, not an HTML-rendering app) and `Cross-Origin-Resource-Policy` is relaxed to `cross-origin` so the frontend — a different origin — can still load `/streams` and `/thumbnails` assets directly.
@@ -775,7 +828,7 @@ TrustStream/
 │   │   │   ├── forensics.service.js         # All 4 video forensic modules (compression, temporal, AV sync, score fusion) in one file
 │   │   │   └── image-forensics.service.js   # Image forensics (JPEG quant + EXIF)
 │   │   ├── routes/
-│   │   │   └── upload.routes.js             # All video + image endpoints, unified /feed (search/filter/pagination), public-verify, sync, timeline (mounted at /api/upload); rate limiting + ID validation
+│   │   │   └── upload.routes.js             # All video + image endpoints, unified /feed (search/filter/pagination), stats, sync, timeline (mounted at /api/upload); rate limiting + ID validation
 │   │   └── server.js                        # Express entry — helmet, restricted CORS, global error handler, serves /streams + /thumbnails, starts Fabric event listener
 │   ├── scripts/
 │   │   └── generate-c2pa-cert.sh            # One-time: generates the root+leaf ES256 cert chain used to sign C2PA manifests
@@ -802,17 +855,18 @@ TrustStream/
 │       │   ├── Imagedetail.jsx              # Image full details (metadata, forensics, Fabric proof, IPFS, C2PA)
 │       │   ├── TimeLinePage.jsx             # Full media lifecycle visual timeline (video + image)
 │       │   ├── FabricAudit.jsx              # Live Fabric audit dashboard (SSE)
-│       │   ├── PublicVerify.jsx             # No-login verify-by-upload — drag & drop, real C2PA + hash-fallback check
+│       │   ├── Analytics.jsx                # Platform analytics dashboard — real charts from GET /api/upload/stats
 │       │   └── Admin.jsx                    # Tabbed upload (Video + Image), thumbnail picker, pipeline UI — gated by Clerk when VITE_REQUIRE_ADMIN_AUTH=true
 │       ├── components/
 │       │   ├── VideoPlayer.jsx              # hls.js + per-segment SHA-256 + tamper overlay + posterUrl
 │       │   ├── NewsCard.jsx                 # Reusable card (legacy; current Home uses inline cards)
 │       │   ├── ForensicPanel.jsx            # Visualizes the 4 video forensic modules
 │       │   ├── VerificationBadge.jsx        # Multi-layer verification badge
-│       │   ├── Navbar.jsx                   # Reader navbar (logo + theme toggle + live badge + Verify Content link)
+│       │   ├── charts/                      # Hand-written inline-SVG chart components (Bar/GroupedBar/Donut) for Analytics.jsx
+│       │   ├── Navbar.jsx                   # Reader navbar (logo + theme toggle + live badge + Analytics link)
 │       │   └── SyncButton.jsx               # Sync-from-blockchain trigger
 │       ├── services/
-│       │   ├── api.js                       # videoAPI, imageAPI, feedAPI, syncAPI, timelineAPI
+│       │   ├── api.js                       # videoAPI, imageAPI, feedAPI, statsAPI, syncAPI, timelineAPI
 │       │   └── hash.js                      # Browser SHA-256 (Web Crypto API)
 │
 ├── network/
@@ -860,18 +914,28 @@ Every write to `truststreamcc` requires the channel's `AND(Org1MSP.peer, Org2MSP
 
 | Function | What it does |
 |----------|-------------|
-| `RegisterVideoProof(videoId, title, metadataCid, merkleRoot, totalSegments)` | Creates a new video proof, `status: "active"`. Fails if the ID already exists. |
-| `RegisterImageProof(imageId, title, sha256Hash, ipfsCid, metadataCid, c2paHash)` | Creates a new image proof, `status: "active"`. |
+| `RegisterVideoProof(videoId, title, metadataCid, merkleRoot, totalSegments)` | **Org1MSP (NewsAgency) only.** Creates a new video proof, `status: "pending_broadcaster"`. Fails if the ID already exists or the caller isn't NewsAgency. |
+| `RegisterImageProof(imageId, title, sha256Hash, ipfsCid, metadataCid, c2paHash)` | **Org1MSP (NewsAgency) only.** Creates a new image proof, `status: "pending_broadcaster"`. |
+| `ApproveByBroadcaster(mediaType, mediaId)` / `RejectByBroadcaster(mediaType, mediaId, reason)` | **Org2MSP (Broadcaster) only.** Approve moves `pending_broadcaster` → `pending_auditor` (emits `MediaApprovedByBroadcaster`); reject moves it to `rejected` (emits `MediaRejected`). Fails if the item isn't currently `pending_broadcaster`. |
+| `ApproveByAuditor(mediaType, mediaId)` / `RejectByAuditor(mediaType, mediaId, reason)` | **Org3MSP (Auditor) only.** Approve moves `pending_auditor` → `active` (emits `MediaFullyApproved`) — this is what `VerifyVideoProof`/`VerifyImageProof` call trustworthy. Reject moves it to `rejected`. Fails if the item isn't currently `pending_auditor`. |
 | `EndorseMedia(mediaType, mediaId)` | Marks an org's explicit endorsement flag (registration already implies all 3 endorsed, since the channel's endorsement policy required it to commit at all). |
 | `GetMediaProof(mediaType, mediaId)` | Reads the current state of one proof. |
-| `ReportTamper(mediaType, mediaId)` | A single org flags a proof as possibly tampered. The org that originally created the proof is excluded from counting toward its own item's dispute. Idempotent per org. Once **2** distinct non-creator orgs have reported, `status` flips to `"disputed"` and a `MediaDisputed` event fires. |
+| `ReportTamper(mediaType, mediaId)` | A single org flags a proof as possibly tampered. Only valid once a proof has completed the approval workflow (`active` or already `disputed`) — can't tamper-report something still pending or rejected. The org that originally created the proof is excluded from counting toward its own item's dispute. Idempotent per org. Once **2** distinct non-creator orgs have reported, `status` flips to `"disputed"` and a `MediaDisputed` event fires. |
 | `ClearDispute(mediaType, mediaId)` | **Org3MSP (Auditor) only** — resets `status` to `"active"` and clears the tamper-report map. Fails for any other org, and fails if the item isn't currently disputed. Prior tamper reports remain visible via `GetMediaHistory`. |
 | `RevokeMedia(mediaType, mediaId, reason)` | Marks a proof `"revoked"` (from `active` or `disputed`). Fails if already revoked. Emits `MediaRevoked`. |
 | `GetMediaHistory(mediaType, mediaId)` | Every version this key has ever held, from the ledger's own history index — the basis for the Revocation Timeline. |
-| `QueryMedia(queryString)` / `QueryByOrg(mspId)` / `QueryByMediaType(mediaType)` / `QueryRevoked()` | CouchDB rich queries (Mango selectors) — evaluate-only, never submitted as a write. |
-| `VerifyVideoProof(videoId, merkleRoot)` / `VerifyImageProof(imageId, sha256Hash)` | Compares a freshly computed hash against the ledger record; `valid` is `true` only if the hash matches **and** the record is neither revoked nor disputed. |
+| `QueryMedia(queryString)` / `QueryByOrg(mspId)` / `QueryByMediaType(mediaType)` / `QueryRevoked()` / `QueryPendingBroadcaster()` / `QueryPendingAuditor()` | CouchDB rich queries (Mango selectors) — evaluate-only, never submitted as a write. The last two back the Broadcaster/Auditor portals' queues. |
+| `VerifyVideoProof(videoId, merkleRoot)` / `VerifyImageProof(imageId, sha256Hash)` | Compares a freshly computed hash against the ledger record; `valid` is `true` only if the hash matches **and** `status === "active"` — a proof still pending approval, or rejected, is never valid even if its hash matches. |
 
-Chaincode events emitted: `MediaRegistered`, `MediaRevoked`, `MediaDisputed`, `MediaDisputeCleared` — the backend's `fabric.service.js` maintains a long-lived listener and re-broadcasts them over SSE at `/api/upload/blockchain/fabric-events`; `FabricAudit.jsx` subscribes with `EventSource`.
+Chaincode events emitted: `MediaRegistered`, `MediaApprovedByBroadcaster`, `MediaFullyApproved`, `MediaRejected`, `MediaRevoked`, `MediaDisputed`, `MediaDisputeCleared` — the backend's `fabric.service.js` maintains a long-lived listener and re-broadcasts them over SSE at `/api/upload/blockchain/fabric-events`; `FabricAudit.jsx` subscribes with `EventSource`.
+
+### CouchDB indexes
+
+`QueryByOrg`/`QueryByMediaType`/`QueryRevoked`/`QueryPendingBroadcaster`/`QueryPendingAuditor` all filter on `docType: "mediaProof"` plus one more field (`createdBy`, `mediaType`, or `status`). Without an explicit index, CouchDB answers a Mango selector query by scanning every document rather than using an index — invisible at small ledger sizes (the Caliper benchmark's query round measured 20ms at ~250 records) but a documented Fabric performance anti-pattern that degrades as the ledger grows. Three indexes matching each selector live at `network/chaincode/truststream/javascript/META-INF/statedb/couchdb/indexes/` — CouchDB picks them up automatically the next time this chaincode version is installed (no code change to the query functions themselves; indexes just give CouchDB a faster path to the same answer).
+
+### A real CouchDB determinism bug, found and fixed
+
+Every write that reads a proof and rewrites it (`ApproveByBroadcaster`, `ReportTamper`, `ClearDispute`, `RevokeMedia`, etc.) hit an intermittent `ProposalResponsePayloads do not match` endorsement failure during testing. Diagnosed by querying the same key directly against each org's own peer: **Org3's CouchDB returned the identical document with its JSON keys in a different order than Org1's and Org2's.** Fabric requires every endorsing peer's simulated response to be byte-identical; `getState()` over CouchDB is not guaranteed to preserve key order across peers (CouchDB stores values as its own JSON documents and can normalize them differently per instance/version), so a plain `JSON.stringify(proof)` after a read-modify-write inherits whatever order the underlying state database happened to hand back - not a bug in the chaincode's own logic, but a real correctness hazard specific to pairing Fabric with CouchDB. Fixed with a `_canonicalJSON()` helper that recursively sorts object keys before every `putState`/return/event, applied to all 22 call sites across the contract - the written state and every returned payload is now deterministic regardless of what order the state database returns.
 
 ---
 
@@ -886,6 +950,38 @@ The chaincode implements a 2-of-3 tamper-dispute mechanism directly, with the sa
 - **Guards** — `ReportTamper` is blocked once a proof is `revoked`; `ClearDispute` requires the proof to currently be `disputed`
 
 This was verified end-to-end via direct `peer chaincode invoke` calls as each org: a single org's report never disputes an item; two distinct non-creator orgs' reports do; a non-Auditor's `ClearDispute` attempt is rejected with `"Only Org3MSP (Auditor) may clear a dispute"`; the Auditor's clears successfully.
+
+---
+
+## Sequential Approval Workflow
+
+Registering content and having all 3 peers endorse the write is not the same thing as all 3 *organizations* having actually reviewed it — the endorsement policy is a protocol-level guarantee that runs automatically on every write, regardless of who submitted it. What was missing was an application-level review: a real sequential approval chain where Broadcaster and then Auditor each independently decide, using their own Fabric identity, before content is trusted.
+
+```text
+NewsAgency uploads
+  → status: pending_broadcaster
+  → appears in the Broadcaster's queue (GET /api/upload/broadcaster/pending)
+       → Broadcaster approves  → status: pending_auditor → appears in Auditor's queue
+       → Broadcaster rejects   → status: rejected (terminal)
+  → Auditor approves  → status: active   (now VerifyVideoProof/VerifyImageProof calls it valid, visible in the public feed)
+  → Auditor rejects    → status: rejected (terminal)
+```
+
+### Backend: real multi-org identity, not a role switch
+
+`fabric.service.js` holds a separate pooled Gateway connection per org (`getFabricContract("org1" | "org2" | "org3")`), each with its own X.509 identity read from its own env vars (`FABRIC_ORG2_*`/`FABRIC_ORG3_*`, documented in the `.env` sample below; org1 falls back to the original unprefixed vars so an existing `.env` keeps working). Approving as Broadcaster genuinely submits the transaction signed by `Admin@org2.example.com`; the chaincode checks `ctx.clientIdentity.getMSPID()` itself, so this can't be spoofed by hitting the wrong route with the wrong org's intent.
+
+### Access: `/broadcaster` and `/auditor`
+
+Each portal is a single shared passcode (`BROADCASTER_PORTAL_PASSCODE`/`AUDITOR_PORTAL_PASSCODE`), checked via an `X-Org-Passcode` header, rate-limited against guessing. This is deliberately a simple gate, not a full per-user auth system — good enough to demonstrate that a genuinely distinct party is reviewing content with its own identity, not meant to survive a real multi-tenant deployment (a real consortium member would run this as its own separate service; see the architecture discussion this feature was built from).
+
+### Verified end-to-end through the real API, including a real bug along the way
+
+- Registered a test image → confirmed `pending_broadcaster` both on-chain and in the local catalog.
+- Logged into the Broadcaster portal, saw it in the queue, approved it with the Broadcaster's own identity → confirmed `pending_auditor`, confirmed the item left the Broadcaster's queue and appeared in the Auditor's.
+- Wrong-org attempts (e.g. submitting `ApproveByAuditor` as Org1MSP) correctly rejected by the chaincode with a clear error.
+- Logged into the Auditor portal, approved → confirmed `active`, confirmed the item now appears in the public feed (it's excluded by default while pending, the same way a newsroom wouldn't publish an unapproved draft).
+- Along the way, hit and fixed the CouchDB key-ordering determinism bug described above, and a second real bug: the approval routes weren't writing the chain's result back into the local catalog cache, so `/feed`/`/stats` kept showing the old pending status after a successful on-chain approval - fixed by syncing every approve/reject response into the local manifest, the same pattern every other write route in this file already follows.
 
 ---
 
@@ -953,19 +1049,6 @@ A `validation_state: "Trusted"` result means: the ES256 signature is valid, the 
 - **Image:** embedded directly in the pinned file at `ipfsCid` — no separate sidecar
 - **Video source MP4:** embedded directly in the pinned file at `sourceIpfsCid` — no separate sidecar
 - **Video segments:** `seg_NNN.c2pa` saved next to `seg_NNN.ts` (offline verification)
-
----
-
-## Public Verification (No Login Required)
-
-`http://localhost:5173/verify` — a drag-and-drop page anyone can use, no Clerk account needed, built on top of the real C2PA work above. `POST /api/upload/public-verify` runs two independent checks, in order:
-
-1. **Embedded-manifest re-validation.** Because a genuine TrustStream image or source MP4 carries its own signed C2PA manifest (see [C2PA Implementation](#c2pa-implementation)), the file is *self-describing* — verification doesn't need to already know which catalog entry it came from. The uploaded bytes are run straight through `verifyEmbeddedAsset()` (the same `Reader.fromAsset` + trust-anchor pipeline used everywhere else in the app), and if the manifest is present and signed by TrustStream's own cert chain, its `instance_id` (`urn:truststream:image:<id>` or `urn:truststream:<id>:source`) is parsed to look up the matching catalog record. This means the check still works on a copy of the file the visitor downloaded independently — it was never re-uploaded to TrustStream for this request to succeed.
-2. **Hash fallback.** For content that was never C2PA-embeddable to begin with — a raw `.ts` HLS segment (see the MPEG-TS limitation under [C2PA Implementation](#c2pa-implementation)) — there's nothing to re-validate, so the endpoint falls back to an exact SHA-256 comparison against every stored image hash and every video segment hash in the catalog.
-
-The response distinguishes the two (`matchType: "embedded-c2pa"` vs `"hash-match"` vs `"none"`), and separately reports whatever C2PA data *was* found even when there's no catalog match — e.g. a file carrying a real C2PA manifest signed by a different, untrusted party surfaces as `c2pa.exists: true, c2pa.valid: false`, distinct from a file with no provenance data at all.
-
-Verified end-to-end (see [What's New](#whats-new)) against three real cases: a genuine TrustStream image downloaded fresh from its IPFS gateway URL (→ `embedded-c2pa`, `validation_state: "Trusted"`), an unrelated image (→ `none`), and a raw `.ts` segment pulled directly off disk (→ `hash-match`).
 
 ---
 
@@ -1079,6 +1162,14 @@ GET /api/upload/blockchain/revocation-timeline?id=<mediaId>&kind=video|image
 `http://localhost:5173/fabric-audit`
 
 A browsable view of everything the consortium has committed to `mychannel`, since Fabric — being permissioned — has no public block explorer like Etherscan. Summary tiles, filters (all/ready/revoked/degraded/skipped), per-org **and** per-peer endorsement display, and a green **Live** badge — new records appear the instant their block commits, over SSE (no polling), via `GET /api/upload/blockchain/fabric-events`.
+
+---
+
+## Analytics Dashboard
+
+`http://localhost:5173/analytics` — every figure is computed live from the actual catalog and Fabric ledger via `GET /api/upload/stats` (verdict counts, risk-score histogram, per-day upload counts, on-chain status breakdown); nothing on the page is simulated or placeholder data. The one static section is the Hyperledger Caliper benchmark chart, which reproduces the already-measured results from [Performance Benchmarking](#performance-benchmarking-hyperledger-caliper) rather than re-running the load test on every page load.
+
+Charts are hand-written inline SVG (no charting library added — kept the bundle lean rather than pulling in Recharts/Chart.js for four chart types), built against a CVD-safe, WCAG-checked color system: status colors (good/warning/critical) are fixed and always paired with a label (never color-alone), categorical series use a fixed two-slot order validated separately for light and dark themes, and every chart has per-mark hover tooltips plus a legend. The categorical pair (video/image series) passes all checks — CVD ΔE 24.7–26.8 against an ≥8 target, normal-vision ΔE 31.8–33.6 against a ≥15 floor, in both themes.
 
 ---
 
@@ -1213,6 +1304,19 @@ The thesis core promise is **"uploaded content cannot be deleted."** This is enf
 
 ## What's New
 
+### v13 — Sequential Approval Workflow, Multi-Org Identity, Real CouchDB Bug Fix (September 2026)
+
+* **Closed a real gap between "3 orgs' peers endorse every write" and "3 orgs actually reviewed this":** previously the backend only ever held NewsAgency's Fabric identity, so even a UI button labeled "Auditor-only" always submitted as Org1MSP - Broadcaster and Auditor were only ever present at the protocol level (peer endorsement), never at the application level. `fabric.service.js` now holds a separate pooled connection per org (`getFabricContract("org1"|"org2"|"org3")`), each with its own real X.509 identity.
+* **New sequential approval chaincode workflow:** `RegisterVideoProof`/`RegisterImageProof` now require Org1MSP and start a proof at `pending_broadcaster` instead of `active`. `ApproveByBroadcaster`/`RejectByBroadcaster` (Org2MSP-only) and `ApproveByAuditor`/`RejectByAuditor` (Org3MSP-only) move it through `pending_auditor` to `active` or to a terminal `rejected` - each stage is enforced by `ctx.clientIdentity.getMSPID()` inside the chaincode itself, not trusted from the caller.
+* **New `/broadcaster` and `/auditor` portals:** passcode-gated queues showing exactly what's waiting on that org, with real Approve/Reject actions submitted under that org's own identity. `/feed` now excludes not-yet-approved content by default, the same way a newsroom wouldn't publish an unapproved draft.
+* **Found and fixed a real Fabric/CouchDB determinism bug while testing this:** read-modify-write chaincode calls intermittently failed with `ProposalResponsePayloads do not match`. Traced to Org3's CouchDB returning the same document with its JSON keys in a different order than Org1/Org2's - `getState()` over CouchDB doesn't guarantee key order is preserved identically across peers. Fixed with a `_canonicalJSON()` helper (recursive key sort before every `putState`/return/event) applied across all 22 call sites in the contract - see [Fabric Chaincode Reference](#fabric-chaincode-reference).
+* **Found and fixed a second real bug along the way:** the new approval routes updated the chain correctly but never wrote the result back into the local catalog cache that `/feed`/`/stats`/detail pages actually read, so a successful on-chain approval didn't show up anywhere until a full resync. Fixed by syncing every approve/reject response into the local manifest, same pattern as every other write route.
+* **Verified end-to-end through the real API, twice** (once before the CouchDB fix failed partway through, once clean after): register → pending_broadcaster → Broadcaster approves (wrong-org attempts correctly rejected) → pending_auditor → Auditor approves (wrong-org attempts correctly rejected) → active → now visible in the public feed.
+
+### v12 — Removed Public Verify-by-Upload (September 2026)
+
+* **Removed the public "Verify by Upload" page and its endpoint** (`/verify`, `POST /api/upload/public-verify`) — decided it wasn't needed for this project's scope. Deleted `PublicVerify.jsx`, the `verifyAPI` client, the navbar link, and the backend route/multer config/rate limiter; `verifyEmbeddedAsset()` itself stays, since the per-media C2PA verification routes (`/images/:imageId/c2pa`, `/:videoId/source-c2pa`) still use it.
+
 ### v11 — Verifiable IPFS Playback, Deployment-Breaking URL Fix (September 2026)
 
 * **Measured, not assumed, the local-vs-IPFS video storage trade-off:** prompted by wanting HLS segments to be IPFS-only like images already are, actually benchmarked Pinata's gateway against local disk for segment fetches — 8.07s for a single cold fetch, then `HTTP 429` rate-limiting on every request after. Confirmed that serving live playback directly from a public IPFS gateway would make video unwatchable, not just slower, so the local HLS cache stays as the default serving path. See [Storage Summary](#storage-summary) for the numbers and reasoning.
@@ -1227,13 +1331,12 @@ The thesis core promise is **"uploaded content cannot be deleted."** This is enf
 * **Made configurable:** target segment length is now `HLS_SEGMENT_SECONDS` (default 2) instead of a magic number in the FFmpeg command string, documented as an explicit trade-off (shorter = finer tamper localization, more per-video IPFS/C2PA overhead; longer = the reverse).
 * **Verified** with a real 7.3-second test upload: measured segment durations came back `2.02s, 2.19s, 2.19s, 1.50s` (summing to the correct `7.90s` total) rather than a fabricated `4 × 2s = 8.0s`.
 
-### v9 — API Hardening, Feed Search, Public Verification (September 2026)
+### v9 — API Hardening, Feed Search (September 2026)
 
 * **Found and fixed a real path-traversal vulnerability (CWE-22):** every video/image lookup route resolved `:videoId`/`:imageId` directly into a catalog filesystem path with no validation — a crafted ID containing `../` segments could read arbitrary `.json` files outside the catalog directory. Fixed with a centralized Express `router.param()` validator (UUID/integer/enum allowlists) that applies to every route using those param names, present and future, verified against both raw and URL-encoded traversal payloads. See [Security & Hardening](#security--hardening).
-* **API hardening:** `helmet` security headers, CORS restricted from wide-open (`origin: '*'`) to an `FRONTEND_ORIGIN` allowlist, two-tier `express-rate-limit` (600 req/15min general, 20 req/hour on uploads, 15 req/15min on public-verify), title/description length validation, `trust proxy` for correct client-IP detection behind Render's reverse proxy, and a global JSON error handler replacing Express's default HTML stack-trace page.
+* **API hardening:** `helmet` security headers, CORS restricted from wide-open (`origin: '*'`) to an `FRONTEND_ORIGIN` allowlist, two-tier `express-rate-limit` (600 req/15min general, 20 req/hour on uploads), title/description length validation, `trust proxy` for correct client-IP detection behind Render's reverse proxy, and a global JSON error handler replacing Express's default HTML stack-trace page.
 * **Server-side feed search, filtering, and pagination:** `GET /api/upload/feed` previously shipped the entire catalog to the browser on every load and paginated client-side. It now does real server-side search (title/description), media-type and status (verified/disputed/revoked) filtering, and pagination (`page`/`limit`, capped at 50/page) — tested against the live catalog (251 entries from earlier Caliper benchmark runs) with correct result counts for search, media-type, and status filters.
-* **Public "Verify by Upload" page** (`/verify`, no login required): re-runs the real C2PA validation pipeline directly against whatever file a visitor drops in — genuinely self-contained verification, since a valid TrustStream manifest is embedded in the file itself and doesn't require the file to already be known to the server. Falls back to exact SHA-256 hash matching for content that was never C2PA-embeddable to begin with (raw `.ts` HLS segments). Verified against three real cases: a genuine image re-downloaded from its IPFS gateway URL (`embedded-c2pa`, `validation_state: "Trusted"`), an unrelated image (no match), and a raw segment file pulled off disk (`hash-match`). See [Public Verification](#public-verification-no-login-required).
-* **Motivation:** requested as part of making both the frontend and backend "more professional" ahead of deployment — the path-traversal find in particular came directly out of implementing the ID-validation hardening, not from a separate audit pass.
+* **Motivation:** requested as part of making both the frontend and backend "more professional" ahead of deployment — the path-traversal find in particular came directly out of implementing the ID-validation hardening, not from a separate audit pass. (This version also originally added a public verify-by-upload page — removed in v12.)
 
 ### v8 — Real, Spec-Compliant C2PA (September 2026)
 

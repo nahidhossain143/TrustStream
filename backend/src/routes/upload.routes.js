@@ -51,6 +51,12 @@ const {
   revokeMediaProof,
   reportTamper,
   clearDispute,
+  approveByBroadcaster,
+  rejectByBroadcaster,
+  approveByAuditor,
+  rejectByAuditor,
+  queryPendingBroadcaster,
+  queryPendingAuditor,
   getMediaHistory,
   queryLedger,
   fabricEvents,
@@ -112,14 +118,14 @@ const uploadLimiter = rateLimit({
   message: { error: "Too many uploads from this IP - try again later." },
 });
 
-// Public, unauthenticated verify-by-upload endpoint - tighter than the
-// admin upload limiter since anyone on the internet can hit it.
-const publicVerifyLimiter = rateLimit({
+// The Broadcaster/Auditor portals are passcode-gated but still reachable by
+// anyone who finds the URL - bounds brute-force guessing of the passcode.
+const portalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  limit: 15,
+  limit: 30,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: "Too many verification requests - try again in a few minutes." },
+  message: { error: "Too many attempts - try again later." },
 });
 
 router.use(generalLimiter);
@@ -140,6 +146,12 @@ const validateIdParam = (req, res, next, value) => {
 router.param("videoId", validateIdParam);
 router.param("imageId", validateIdParam);
 router.param("id", validateIdParam);
+router.param("mediaId", validateIdParam);
+
+router.param("mediaType", (req, res, next, value) => {
+  if (value !== "video" && value !== "image") return res.status(400).json({ error: "Invalid mediaType" });
+  next();
+});
 
 router.param("segmentIndex", (req, res, next, value) => {
   if (!/^\d+$/.test(value)) return res.status(400).json({ error: "Invalid segmentIndex" });
@@ -176,30 +188,6 @@ const imageUpload = multer({
     }
   },
   limits: { fileSize: 20 * 1024 * 1024 },
-});
-
-// Public verify-by-upload: any image or MP4, capped smaller than the
-// authenticated upload limits since this is unauthenticated and
-// abuse-prone (repeated large uploads just to run a lookup).
-const verifyUpload = multer({
-  dest: uploadsDir,
-  fileFilter: (_req, file, cb) => {
-    // .ts HLS segments have no reliable standard MIME type across
-    // browsers/tools (video/mp2t, video/mp2ts, application/octet-stream
-    // are all seen in the wild) - allowed here so someone verifying a
-    // raw downloaded segment still reaches the hash-fallback check,
-    // even though it can never carry an embedded C2PA manifest itself.
-    const allowed = [
-      "image/jpeg", "image/jpg", "image/png", "image/webp",
-      "video/mp4", "video/mp2t", "video/mp2ts", "application/octet-stream",
-    ];
-    if (allowed.includes(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(new Error("Unsupported file type for verification"));
-    }
-  },
-  limits: { fileSize: 100 * 1024 * 1024 },
 });
 
 // =================================================================
@@ -1639,109 +1627,195 @@ router.post("/images/:imageId/clear-dispute", async (req, res) => {
 });
 
 // =================================================================
-//  PUBLIC VERIFY-BY-UPLOAD
+//  ORG APPROVAL PORTALS (Broadcaster, Auditor)
 //
-//  No login required - anyone can drop in a file and find out whether
-//  it's something TrustStream has on record. Two independent checks:
+//  Sequential workflow enforced by the chaincode itself (see
+//  ApproveByBroadcaster/ApproveByAuditor in index.js): a submission sits
+//  in "pending_broadcaster" until Broadcaster approves it (moving it to
+//  "pending_auditor"), then in "pending_auditor" until Auditor approves
+//  it (moving it to "active"). Each approval/rejection here is submitted
+//  with that org's OWN Fabric identity (see fabric.service.js's
+//  getFabricContract("org2"/"org3")) - the chaincode checks
+//  ctx.clientIdentity.getMSPID() itself, so this can't be spoofed by
+//  calling the wrong route.
 //
-//  1. Embedded C2PA (images + video source MP4 - see c2pa.service.js):
-//     the file is genuinely self-describing, so this works even on a
-//     copy that was never re-uploaded to TrustStream - re-run the real
-//     C2PA validation pipeline directly against the uploaded bytes, then
-//     parse the manifest's instance_id (urn:truststream:image:<id> or
-//     urn:truststream:<id>:source) to look up the matching catalog entry.
-//  2. Hash fallback: if there's no embedded manifest (e.g. a raw .ts
-//     HLS segment, which was never C2PA-embeddable to begin with - see
-//     c2pa.service.js's file header), fall back to an exact SHA-256
-//     match against stored image/segment hashes.
+//  Access is a single shared passcode per org (BROADCASTER_PORTAL_PASSCODE/
+//  AUDITOR_PORTAL_PASSCODE env vars) - a deliberately simple gate, not a
+//  full per-user auth system. Good enough to demonstrate that a distinct
+//  party is approving distinct content; not meant to survive a real
+//  multi-tenant deployment. See README.
 // =================================================================
 
-const parseTrustStreamInstanceId = (instanceId) => {
-  if (!instanceId) return null;
-  const imageMatch = instanceId.match(/^urn:truststream:image:([0-9a-f-]+)$/i);
-  if (imageMatch) return { mediaType: "image", id: imageMatch[1] };
-  const videoMatch = instanceId.match(/^urn:truststream:([0-9a-f-]+):source$/i);
-  if (videoMatch) return { mediaType: "video", id: videoMatch[1] };
-  return null;
-};
-
-const findByHash = (sha256Hash) => {
-  const image = listImageManifests().find((m) => m.sha256Hash === sha256Hash);
-  if (image) return { mediaType: "image", id: image.imageId, title: image.title };
-
-  const videos = listManifests({ kind: "video" });
-  for (const video of videos) {
-    const segment = (video.segments || []).find((s) => s.sha256Hash === sha256Hash);
-    if (segment) return { mediaType: "video", id: video.videoId, title: video.title, segmentIndex: segment.index };
+const requireOrgPasscode = (envVarName) => (req, res, next) => {
+  const expected = process.env[envVarName];
+  if (!expected) return res.status(503).json({ error: "Portal not configured on this server" });
+  if (req.headers["x-org-passcode"] !== expected) {
+    return res.status(401).json({ error: "Invalid passcode" });
   }
-  return null;
+  next();
 };
 
-router.post("/public-verify", publicVerifyLimiter, verifyUpload.single("file"), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: "A file is required" });
-  const { path: inputPath, mimetype } = req.file;
+// Ledger entries only carry what the chaincode itself stores (title,
+// metadataCid, timestamps). Enriching with the local catalog's
+// thumbnail/description gives the queue a recognizable card instead of a
+// bare ID - falls back gracefully to ledger-only fields if a local
+// manifest isn't found (e.g. a machine recovered purely via
+// sync-from-blockchain).
+const enrichPendingEntry = (entry) => {
+  const proof = entry.value || entry;
+  const { mediaType, mediaId } = proof;
+  const manifest = mediaType === "video" ? readManifest(mediaId) : readImageManifest(mediaId);
 
+  return {
+    mediaType,
+    mediaId,
+    title: proof.title,
+    createdAt: proof.createdAt,
+    createdBy: proof.createdBy,
+    status: proof.status,
+    thumbnailUrl: manifest?.thumbnailUrl || null,
+    ipfsCid: manifest?.ipfsCid || null,
+    description: manifest?.description || null,
+    detailUrl: mediaType === "image" ? `/image/${mediaId}` : `/video/${mediaId}`,
+  };
+};
+
+router.post("/broadcaster/login", portalLimiter, (req, res) => {
+  if (req.body?.passcode !== process.env.BROADCASTER_PORTAL_PASSCODE) {
+    return res.status(401).json({ error: "Invalid passcode" });
+  }
+  res.json({ ok: true });
+});
+
+router.get("/broadcaster/pending", portalLimiter, requireOrgPasscode("BROADCASTER_PORTAL_PASSCODE"), async (req, res) => {
+  const result = await queryPendingBroadcaster();
+  if (!result.available) return res.status(503).json({ error: result.reason });
+  res.json({ items: (result.results || []).map(enrichPendingEntry) });
+});
+
+// The chain itself is always the source of truth (confirmed by the
+// approve/reject call's own return value), but /feed, /stats, and the
+// detail pages all read the local catalog cache, not the chain directly -
+// same reasoning as every other write route in this file. Without this,
+// an approval would succeed on-chain while the UI kept showing the old
+// pending status until the next sync-from-blockchain.
+const syncMediaResultToLocalCatalog = (mediaType, mediaId, result) => {
+  if (mediaType === "image") {
+    updateImageManifest(mediaId, (cur) => ({ ...cur, fabricResult: result }));
+  } else {
+    updateManifest(mediaId, (cur) => ({ ...cur, fabricResult: result }));
+  }
+};
+
+router.post("/broadcaster/:mediaType/:mediaId/approve", portalLimiter, requireOrgPasscode("BROADCASTER_PORTAL_PASSCODE"), async (req, res) => {
   try {
-    const buffer = fs.readFileSync(inputPath);
-    const sha256Hash = crypto.createHash("sha256").update(buffer).digest("hex");
+    const result = await approveByBroadcaster(req.params.mediaType, req.params.mediaId);
+    syncMediaResultToLocalCatalog(req.params.mediaType, req.params.mediaId, result);
+    res.json({ approved: true, result });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
 
-    let c2pa = null;
-    let match = null;
+router.post("/broadcaster/:mediaType/:mediaId/reject", portalLimiter, requireOrgPasscode("BROADCASTER_PORTAL_PASSCODE"), async (req, res) => {
+  try {
+    const result = await rejectByBroadcaster(req.params.mediaType, req.params.mediaId, req.body?.reason);
+    syncMediaResultToLocalCatalog(req.params.mediaType, req.params.mediaId, result);
+    res.json({ rejected: true, result });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
 
-    if (mimetype === "image/jpeg" || mimetype === "image/jpg" || mimetype === "image/png" || mimetype === "video/mp4") {
-      c2pa = await verifyEmbeddedAsset(buffer, mimetype);
-      if (c2pa?.exists) {
-        const parsed = parseTrustStreamInstanceId(c2pa.instance_id);
-        if (parsed?.mediaType === "image") {
-          const manifest = readImageManifest(parsed.id);
-          if (manifest) match = { mediaType: "image", id: parsed.id, title: manifest.title, manifest };
-        } else if (parsed?.mediaType === "video") {
-          const manifest = readManifest(parsed.id);
-          if (manifest) match = { mediaType: "video", id: parsed.id, title: manifest.title, manifest };
-        }
+router.post("/auditor/login", portalLimiter, (req, res) => {
+  if (req.body?.passcode !== process.env.AUDITOR_PORTAL_PASSCODE) {
+    return res.status(401).json({ error: "Invalid passcode" });
+  }
+  res.json({ ok: true });
+});
+
+router.get("/auditor/pending", portalLimiter, requireOrgPasscode("AUDITOR_PORTAL_PASSCODE"), async (req, res) => {
+  const result = await queryPendingAuditor();
+  if (!result.available) return res.status(503).json({ error: result.reason });
+  res.json({ items: (result.results || []).map(enrichPendingEntry) });
+});
+
+router.post("/auditor/:mediaType/:mediaId/approve", portalLimiter, requireOrgPasscode("AUDITOR_PORTAL_PASSCODE"), async (req, res) => {
+  try {
+    const result = await approveByAuditor(req.params.mediaType, req.params.mediaId);
+    syncMediaResultToLocalCatalog(req.params.mediaType, req.params.mediaId, result);
+    res.json({ approved: true, result });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.post("/auditor/:mediaType/:mediaId/reject", portalLimiter, requireOrgPasscode("AUDITOR_PORTAL_PASSCODE"), async (req, res) => {
+  try {
+    const result = await rejectByAuditor(req.params.mediaType, req.params.mediaId, req.body?.reason);
+    syncMediaResultToLocalCatalog(req.params.mediaType, req.params.mediaId, result);
+    res.json({ rejected: true, result });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// =================================================================
+//  PLATFORM STATISTICS
+//  Aggregates real numbers across the whole catalog for the frontend
+//  analytics dashboard - every figure here is computed from actual
+//  stored manifests, nothing simulated or placeholder.
+// =================================================================
+
+const RISK_BUCKETS = ["0.0-0.1", "0.1-0.2", "0.2-0.3", "0.3-0.4", "0.4-0.5", "0.5-0.6", "0.6-0.7", "0.7-0.8", "0.8-0.9", "0.9-1.0"];
+const riskBucketIndex = (score) => Math.min(9, Math.max(0, Math.floor(Number(score) * 10)));
+
+router.get("/stats", async (req, res) => {
+  try {
+    const videos = listManifests({ kind: "video" });
+    const images = listImageManifests();
+    const all = [...videos, ...images];
+
+    const verdictBreakdown = { Authentic: 0, Suspicious: 0, "Likely Manipulated": 0, Pending: 0 };
+    const riskHistogram = RISK_BUCKETS.map((bucket) => ({ bucket, count: 0 }));
+    const fabricStatusBreakdown = {};
+    const uploadsByDay = {};
+    let riskSum = 0, riskCount = 0;
+
+    for (const item of all) {
+      const label = item.forensics?.finalLabel;
+      if (label && verdictBreakdown[label] !== undefined) verdictBreakdown[label]++;
+      else verdictBreakdown.Pending++;
+
+      const riskScore = item.kind === "video" ? item.forensics?.videoRiskScore : item.forensics?.imageRiskScore;
+      if (typeof riskScore === "number") {
+        riskHistogram[riskBucketIndex(riskScore)].count++;
+        riskSum += riskScore;
+        riskCount++;
+      }
+
+      const fabricStatus = item.fabricResult?.status || item.fabricStatus || "pending";
+      fabricStatusBreakdown[fabricStatus] = (fabricStatusBreakdown[fabricStatus] || 0) + 1;
+
+      const day = (item.createdAt || "").slice(0, 10);
+      if (day) {
+        uploadsByDay[day] = uploadsByDay[day] || { date: day, videos: 0, images: 0 };
+        uploadsByDay[day][item.kind === "video" ? "videos" : "images"]++;
       }
     }
 
-    if (!match) {
-      const hashMatch = findByHash(sha256Hash);
-      if (hashMatch) {
-        const manifest = hashMatch.mediaType === "image" ? readImageManifest(hashMatch.id) : readManifest(hashMatch.id);
-        match = { ...hashMatch, manifest };
-      }
-    }
-
-    const matchType = match
-      ? (c2pa?.valid && parseTrustStreamInstanceId(c2pa?.instance_id) ? "embedded-c2pa" : "hash-match")
-      : "none";
+    const uploadsOverTime = Object.values(uploadsByDay).sort((a, b) => a.date.localeCompare(b.date));
 
     res.json({
-      matched: Boolean(match),
-      matchType,
-      sha256Hash,
-      c2pa: c2pa ? {
-        exists: c2pa.exists,
-        valid: c2pa.valid,
-        validation_state: c2pa.validation_state,
-        signer: c2pa.signer,
-        signer_org: c2pa.signer_org,
-        algorithm: c2pa.algorithm,
-        actions: c2pa.actions,
-        error: c2pa.error,
-      } : null,
-      match: match ? {
-        mediaType: match.mediaType,
-        id: match.id,
-        title: match.title,
-        createdAt: match.manifest?.createdAt || null,
-        fabricStatus: match.manifest?.fabricStatus || null,
-        status: match.manifest?.fabricResult?.status || match.manifest?.status || null,
-        detailUrl: match.mediaType === "image" ? `/image/${match.id}` : `/video/${match.id}`,
-      } : null,
+      totals: { videos: videos.length, images: images.length, total: all.length },
+      verdictBreakdown,
+      riskHistogram,
+      averageRiskScore: riskCount ? riskSum / riskCount : null,
+      fabricStatusBreakdown,
+      uploadsOverTime,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
-  } finally {
-    fs.unlink(inputPath, () => {});
   }
 });
 
@@ -1773,6 +1847,17 @@ router.get("/feed", async (req, res) => {
       );
     }
 
+    // Content that hasn't finished the Broadcaster -> Auditor approval
+    // workflow yet isn't something a public reader should see, the same way
+    // a real newsroom wouldn't publish an unapproved draft. Excluded from
+    // every view except an explicit ?status=pending request.
+    const PENDING_STATUSES = ["pending_broadcaster", "pending_auditor"];
+    const isPending = (item) => PENDING_STATUSES.includes(item.fabricResult?.status);
+
+    if (status !== "pending") {
+      feed = feed.filter((item) => !isPending(item));
+    }
+
     // Counts reflect the search filter but not the mediaType/status pills
     // themselves, so the pill labels ("Video (N)") stay meaningful no
     // matter which pill is currently selected.
@@ -1790,11 +1875,12 @@ router.get("/feed", async (req, res) => {
       feed = feed.filter((item) => item.fabricResult?.status === "disputed");
     } else if (status === "revoked") {
       feed = feed.filter((item) => item.fabricResult?.status === "revoked");
+    } else if (status === "pending") {
+      feed = feed.filter(isPending);
     } else if (status === "verified") {
       feed = feed.filter((item) =>
         item.fabricStatus === "ready" &&
-        item.fabricResult?.status !== "disputed" &&
-        item.fabricResult?.status !== "revoked"
+        item.fabricResult?.status === "active"
       );
     }
 
