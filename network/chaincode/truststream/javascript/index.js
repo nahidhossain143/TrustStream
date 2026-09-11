@@ -33,6 +33,36 @@ class TrustStreamContract extends Contract {
     return `${mediaType}:${mediaId}`;
   }
 
+  // Fabric requires every endorsing peer's simulated response to be
+  // byte-identical, including the returned value - but getState(), when
+  // CouchDB is the state database, is NOT guaranteed to return a JSON
+  // value's keys in the same order on every peer (CouchDB stores and
+  // returns values as its own JSON documents, and different CouchDB
+  // instances/versions can normalize key order differently - observed
+  // directly on this network: Org3's peer returned a previously-written
+  // proof with its keys reordered relative to Org1/Org2's). A plain
+  // JSON.stringify(proof) after a read-modify-write therefore risks
+  // "ProposalResponsePayloads do not match" purely from storage-layer key
+  // reordering, not any real non-determinism in the chaincode logic
+  // itself. Sorting keys before every stringify makes the written state
+  // and every returned/evented payload deterministic regardless of what
+  // order the underlying state database handed back.
+  _canonicalJSON(value) {
+    const sortKeys = (input) => {
+      if (Array.isArray(input)) return input.map(sortKeys);
+      if (input && typeof input === "object") {
+        return Object.keys(input)
+          .sort()
+          .reduce((sorted, k) => {
+            sorted[k] = sortKeys(input[k]);
+            return sorted;
+          }, {});
+      }
+      return input;
+    };
+    return JSON.stringify(sortKeys(value));
+  }
+
   async _exists(ctx, key) {
     const data = await ctx.stub.getState(key);
     return data && data.length > 0;
@@ -101,7 +131,20 @@ class TrustStreamContract extends Contract {
     ).toISOString();
   }
 
+  // Only NewsAgency submits new content. This is a separate thing from peer
+  // endorsement below: this checks WHO is asking to register (the submitter's
+  // identity), while endorsement is about which peers had to simulate and
+  // sign the proposal regardless of who submitted it.
+  _requireOrg(ctx, expectedMspId, action) {
+    const mspId = ctx.clientIdentity.getMSPID();
+    if (mspId !== expectedMspId) {
+      throw new Error(`Only ${expectedMspId} may ${action} (caller is ${mspId})`);
+    }
+  }
+
   async RegisterVideoProof(ctx, videoId, title, metadataCid, merkleRoot, totalSegments) {
+    this._requireOrg(ctx, "Org1MSP", "register new content");
+
     const key = this._key("video", videoId);
 
     if (await this._exists(ctx, key)) {
@@ -112,7 +155,11 @@ class TrustStreamContract extends Contract {
 
     // The chaincode's endorsement policy is AND(Org1MSP.peer, Org2MSP.peer, Org3MSP.peer),
     // so a peer from all 3 orgs already had to simulate and sign this exact proposal
-    // before the ordering service would let it commit. All three are endorsed by definition.
+    // before the ordering service would let it commit. That's the protocol-level
+    // guarantee and is unconditional -- it's separate from the `status` workflow
+    // below, which is an application-level approval queue: Broadcaster and then
+    // Auditor must each explicitly review and approve before this becomes
+    // "active" (i.e. before VerifyVideoProof/VerifyImageProof call it trustworthy).
     const proof = {
       docType: "mediaProof",
       mediaType: "video",
@@ -126,20 +173,22 @@ class TrustStreamContract extends Contract {
         Broadcaster: true,
         Auditor: true
       },
-      status: "active",
+      status: "pending_broadcaster",
       tamperReports: {},
       createdBy: ctx.clientIdentity.getMSPID(),
       createdAt: now,
       updatedAt: now
     };
 
-    await ctx.stub.putState(key, Buffer.from(JSON.stringify(proof)));
+    await ctx.stub.putState(key, Buffer.from(this._canonicalJSON(proof)));
     this._emitRegistered(ctx, proof, merkleRoot);
 
-    return JSON.stringify(proof);
+    return this._canonicalJSON(proof);
   }
 
   async RegisterImageProof(ctx, imageId, title, sha256Hash, ipfsCid, metadataCid, c2paHash) {
+    this._requireOrg(ctx, "Org1MSP", "register new content");
+
     const key = this._key("image", imageId);
 
     if (await this._exists(ctx, key)) {
@@ -149,7 +198,9 @@ class TrustStreamContract extends Contract {
     const now = this._now(ctx);
 
     // Same reasoning as RegisterVideoProof: the AND(3-org) endorsement policy
-    // already required all 3 orgs' peers to sign this proposal before commit.
+    // already required all 3 orgs' peers to sign this proposal before commit,
+    // unconditionally. The pending_broadcaster -> pending_auditor -> active
+    // workflow below is the separate, application-level approval queue.
     const proof = {
       docType: "mediaProof",
       mediaType: "image",
@@ -164,17 +215,139 @@ class TrustStreamContract extends Contract {
         Broadcaster: true,
         Auditor: true
       },
-      status: "active",
+      status: "pending_broadcaster",
       tamperReports: {},
       createdBy: ctx.clientIdentity.getMSPID(),
       createdAt: now,
       updatedAt: now
     };
 
-    await ctx.stub.putState(key, Buffer.from(JSON.stringify(proof)));
+    await ctx.stub.putState(key, Buffer.from(this._canonicalJSON(proof)));
     this._emitRegistered(ctx, proof, sha256Hash);
 
-    return JSON.stringify(proof);
+    return this._canonicalJSON(proof);
+  }
+
+  // --- Sequential approval workflow -----------------------------------
+  //
+  // pending_broadcaster --[Broadcaster approves]--> pending_auditor
+  //                      \-[Broadcaster rejects]---> rejected
+  // pending_auditor      --[Auditor approves]------> active
+  //                      \-[Auditor rejects]--------> rejected
+  //
+  // Each step requires a real transaction signed by that org's own identity
+  // (checked via ctx.clientIdentity.getMSPID(), not trusted from the
+  // caller), so the stage transitions can't be faked by any other org --
+  // including the org that submitted it.
+
+  async ApproveByBroadcaster(ctx, mediaType, mediaId) {
+    this._requireOrg(ctx, "Org2MSP", "approve at the Broadcaster stage");
+
+    const key = this._key(mediaType, mediaId);
+    const proof = await this._readProof(ctx, key);
+
+    if (proof.status !== "pending_broadcaster") {
+      throw new Error(`Proof is not awaiting Broadcaster approval (current status: ${proof.status})`);
+    }
+
+    const now = this._now(ctx);
+    proof.status = "pending_auditor";
+    proof.broadcasterApprovedAt = now;
+    proof.broadcasterApprovedBy = ctx.clientIdentity.getMSPID();
+    proof.updatedAt = now;
+
+    await ctx.stub.putState(key, Buffer.from(this._canonicalJSON(proof)));
+
+    ctx.stub.setEvent(
+      "MediaApprovedByBroadcaster",
+      Buffer.from(JSON.stringify({ mediaType, mediaId, title: proof.title, approvedAt: now }))
+    );
+
+    return this._canonicalJSON(proof);
+  }
+
+  async RejectByBroadcaster(ctx, mediaType, mediaId, reason) {
+    this._requireOrg(ctx, "Org2MSP", "reject at the Broadcaster stage");
+
+    const key = this._key(mediaType, mediaId);
+    const proof = await this._readProof(ctx, key);
+
+    if (proof.status !== "pending_broadcaster") {
+      throw new Error(`Proof is not awaiting Broadcaster approval (current status: ${proof.status})`);
+    }
+
+    const now = this._now(ctx);
+    proof.status = "rejected";
+    proof.rejectedAt = now;
+    proof.rejectedBy = ctx.clientIdentity.getMSPID();
+    proof.rejectedByOrg = this._orgName(ctx);
+    proof.rejectionStage = "broadcaster";
+    proof.rejectionReason = reason || "";
+    proof.updatedAt = now;
+
+    await ctx.stub.putState(key, Buffer.from(this._canonicalJSON(proof)));
+
+    ctx.stub.setEvent(
+      "MediaRejected",
+      Buffer.from(JSON.stringify({ mediaType, mediaId, title: proof.title, rejectionStage: "broadcaster", reason: proof.rejectionReason, rejectedAt: now }))
+    );
+
+    return this._canonicalJSON(proof);
+  }
+
+  async ApproveByAuditor(ctx, mediaType, mediaId) {
+    this._requireOrg(ctx, "Org3MSP", "approve at the Auditor stage");
+
+    const key = this._key(mediaType, mediaId);
+    const proof = await this._readProof(ctx, key);
+
+    if (proof.status !== "pending_auditor") {
+      throw new Error(`Proof is not awaiting Auditor approval (current status: ${proof.status})`);
+    }
+
+    const now = this._now(ctx);
+    proof.status = "active";
+    proof.auditorApprovedAt = now;
+    proof.auditorApprovedBy = ctx.clientIdentity.getMSPID();
+    proof.updatedAt = now;
+
+    await ctx.stub.putState(key, Buffer.from(this._canonicalJSON(proof)));
+
+    ctx.stub.setEvent(
+      "MediaFullyApproved",
+      Buffer.from(JSON.stringify({ mediaType, mediaId, title: proof.title, approvedAt: now }))
+    );
+
+    return this._canonicalJSON(proof);
+  }
+
+  async RejectByAuditor(ctx, mediaType, mediaId, reason) {
+    this._requireOrg(ctx, "Org3MSP", "reject at the Auditor stage");
+
+    const key = this._key(mediaType, mediaId);
+    const proof = await this._readProof(ctx, key);
+
+    if (proof.status !== "pending_auditor") {
+      throw new Error(`Proof is not awaiting Auditor approval (current status: ${proof.status})`);
+    }
+
+    const now = this._now(ctx);
+    proof.status = "rejected";
+    proof.rejectedAt = now;
+    proof.rejectedBy = ctx.clientIdentity.getMSPID();
+    proof.rejectedByOrg = this._orgName(ctx);
+    proof.rejectionStage = "auditor";
+    proof.rejectionReason = reason || "";
+    proof.updatedAt = now;
+
+    await ctx.stub.putState(key, Buffer.from(this._canonicalJSON(proof)));
+
+    ctx.stub.setEvent(
+      "MediaRejected",
+      Buffer.from(JSON.stringify({ mediaType, mediaId, title: proof.title, rejectionStage: "auditor", reason: proof.rejectionReason, rejectedAt: now }))
+    );
+
+    return this._canonicalJSON(proof);
   }
 
   async EndorseMedia(ctx, mediaType, mediaId) {
@@ -185,14 +358,14 @@ class TrustStreamContract extends Contract {
     proof.endorsements[orgName] = true;
     proof.updatedAt = this._now(ctx);
 
-    await ctx.stub.putState(key, Buffer.from(JSON.stringify(proof)));
-    return JSON.stringify(proof);
+    await ctx.stub.putState(key, Buffer.from(this._canonicalJSON(proof)));
+    return this._canonicalJSON(proof);
   }
 
   async GetMediaProof(ctx, mediaType, mediaId) {
     const key = this._key(mediaType, mediaId);
     const proof = await this._readProof(ctx, key);
-    return JSON.stringify(proof);
+    return this._canonicalJSON(proof);
   }
 
   // A single org flags a proof as possibly tampered. The org that originally
@@ -212,6 +385,10 @@ class TrustStreamContract extends Contract {
 
     if (proof.status === "revoked") {
       throw new Error(`Cannot report tamper on a revoked proof: ${key}`);
+    }
+
+    if (proof.status !== "active" && proof.status !== "disputed") {
+      throw new Error(`Cannot report tamper on a proof that hasn't completed approval yet (current status: ${proof.status})`);
     }
 
     const orgName = this._orgName(ctx);
@@ -247,9 +424,9 @@ class TrustStreamContract extends Contract {
     }
 
     proof.updatedAt = now;
-    await ctx.stub.putState(key, Buffer.from(JSON.stringify(proof)));
+    await ctx.stub.putState(key, Buffer.from(this._canonicalJSON(proof)));
 
-    return JSON.stringify(proof);
+    return this._canonicalJSON(proof);
   }
 
   // Auditor-only recovery from a false-positive dispute. Without this,
@@ -280,7 +457,7 @@ class TrustStreamContract extends Contract {
     proof.disputeClearedBy = mspId;
     proof.updatedAt = now;
 
-    await ctx.stub.putState(key, Buffer.from(JSON.stringify(proof)));
+    await ctx.stub.putState(key, Buffer.from(this._canonicalJSON(proof)));
 
     ctx.stub.setEvent(
       "MediaDisputeCleared",
@@ -295,7 +472,7 @@ class TrustStreamContract extends Contract {
       )
     );
 
-    return JSON.stringify(proof);
+    return this._canonicalJSON(proof);
   }
 
   // Marks a proof as no longer trustworthy. The record itself is never deleted
@@ -323,7 +500,7 @@ class TrustStreamContract extends Contract {
     proof.revocationReason = reason || "";
     proof.updatedAt = now;
 
-    await ctx.stub.putState(key, Buffer.from(JSON.stringify(proof)));
+    await ctx.stub.putState(key, Buffer.from(this._canonicalJSON(proof)));
 
     ctx.stub.setEvent(
       "MediaRevoked",
@@ -340,7 +517,7 @@ class TrustStreamContract extends Contract {
       )
     );
 
-    return JSON.stringify(proof);
+    return this._canonicalJSON(proof);
   }
 
   // Every version this key has ever held, straight from the ledger's history
@@ -418,6 +595,21 @@ class TrustStreamContract extends Contract {
     );
   }
 
+  // Backs each org's approval queue - "everything waiting on my org right now".
+  async QueryPendingBroadcaster(ctx) {
+    return this.QueryMedia(
+      ctx,
+      JSON.stringify({ selector: { docType: "mediaProof", status: "pending_broadcaster" } })
+    );
+  }
+
+  async QueryPendingAuditor(ctx) {
+    return this.QueryMedia(
+      ctx,
+      JSON.stringify({ selector: { docType: "mediaProof", status: "pending_auditor" } })
+    );
+  }
+
   // `valid` answers the question a reader actually asks -- "can I trust this?"
   // -- so a revoked proof is never valid even when its hash still matches.
   // `hashMatches` and `revoked` are reported separately so the two failure
@@ -430,12 +622,17 @@ class TrustStreamContract extends Contract {
       String(proof.merkleRoot).toLowerCase() === String(merkleRoot).toLowerCase();
     const revoked = proof.status === "revoked";
     const disputed = proof.status === "disputed";
+    // "Valid" means fully through the Broadcaster + Auditor approval queue,
+    // not just registered - a pending_* or rejected proof is not yet (or no
+    // longer) something a reader should trust, even if its hash matches.
+    const fullyApproved = proof.status === "active";
 
     return JSON.stringify({
-      valid: hashMatches && !revoked && !disputed,
+      valid: hashMatches && fullyApproved,
       hashMatches,
       revoked,
       disputed,
+      status: proof.status,
       proof
     });
   }
@@ -447,12 +644,14 @@ class TrustStreamContract extends Contract {
       String(proof.sha256Hash).toLowerCase() === String(sha256Hash).toLowerCase();
     const revoked = proof.status === "revoked";
     const disputed = proof.status === "disputed";
+    const fullyApproved = proof.status === "active";
 
     return JSON.stringify({
-      valid: hashMatches && !revoked && !disputed,
+      valid: hashMatches && fullyApproved,
       hashMatches,
       revoked,
       disputed,
+      status: proof.status,
       proof
     });
   }

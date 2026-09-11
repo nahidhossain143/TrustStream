@@ -17,6 +17,32 @@ const ORG_NAME_BY_MSP = {
   Org3MSP: "Auditor",
 };
 
+// Every org the backend can act as. NewsAgency (org1) submits new content;
+// Broadcaster (org2) and Auditor (org3) each run their own approval stage in
+// the sequential workflow (see upload.routes.js's /broadcaster and /auditor
+// routes). Each org's own X.509 identity is read from its own env vars -
+// org1's fall back to the original unprefixed names so an existing .env from
+// before multi-org support keeps working without edits.
+const ORG_ENV_PREFIX = { org1: "FABRIC_ORG1", org2: "FABRIC_ORG2", org3: "FABRIC_ORG3" };
+const LEGACY_FALLBACK_VARS = {
+  org1: {
+    MSP_ID: "FABRIC_MSP_ID",
+    CERT_PATH: "FABRIC_CERT_PATH",
+    KEY_DIR: "FABRIC_KEY_DIR",
+    KEY_PATH: "FABRIC_KEY_PATH",
+    TLS_CERT_PATH: "FABRIC_TLS_CERT_PATH",
+    PEER_ENDPOINT: "FABRIC_PEER_ENDPOINT",
+    PEER_HOST_ALIAS: "FABRIC_PEER_HOST_ALIAS",
+  },
+};
+
+function getOrgEnv(orgKey, suffix) {
+  const prefixedValue = process.env[`${ORG_ENV_PREFIX[orgKey]}_${suffix}`];
+  if (prefixedValue) return prefixedValue;
+  const legacyVarName = LEGACY_FALLBACK_VARS[orgKey]?.[suffix];
+  return legacyVarName ? process.env[legacyVarName] : undefined;
+}
+
 async function getFirstKeyFile(keyDir) {
   const files = await fs.readdir(keyDir);
   const keyFile = files.find((file) => !file.startsWith("."));
@@ -28,23 +54,23 @@ async function getFirstKeyFile(keyDir) {
   return path.join(keyDir, keyFile);
 }
 
-async function createFabricConnection() {
-  const tlsCert = await fs.readFile(process.env.FABRIC_TLS_CERT_PATH);
+async function createFabricConnection(orgKey = "org1") {
+  const tlsCert = await fs.readFile(getOrgEnv(orgKey, "TLS_CERT_PATH"));
   const credentials = grpc.credentials.createSsl(tlsCert);
 
   const client = new grpc.Client(
-    process.env.FABRIC_PEER_ENDPOINT,
+    getOrgEnv(orgKey, "PEER_ENDPOINT"),
     credentials,
     {
-      "grpc.ssl_target_name_override": process.env.FABRIC_PEER_HOST_ALIAS,
+      "grpc.ssl_target_name_override": getOrgEnv(orgKey, "PEER_HOST_ALIAS"),
     }
   );
 
-  const cert = await fs.readFile(process.env.FABRIC_CERT_PATH);
+  const cert = await fs.readFile(getOrgEnv(orgKey, "CERT_PATH"));
 
   const keyPath =
-    process.env.FABRIC_KEY_PATH ||
-    (await getFirstKeyFile(process.env.FABRIC_KEY_DIR));
+    getOrgEnv(orgKey, "KEY_PATH") ||
+    (await getFirstKeyFile(getOrgEnv(orgKey, "KEY_DIR")));
 
   const privateKeyPem = await fs.readFile(keyPath);
   const privateKey = crypto.createPrivateKey(privateKeyPem);
@@ -52,7 +78,7 @@ async function createFabricConnection() {
   const gateway = connect({
     client,
     identity: {
-      mspId: process.env.FABRIC_MSP_ID,
+      mspId: getOrgEnv(orgKey, "MSP_ID"),
       credentials: cert,
     },
     signer: signers.newPrivateKeySigner(privateKey),
@@ -67,27 +93,31 @@ async function createFabricConnection() {
 // A Fabric Gateway connection carries a gRPC channel, a TLS handshake, and a
 // service-discovery round trip -- real fixed costs that opening and closing
 // a fresh one for every request pays repeatedly for no benefit. One shared
-// connection is reused across every register/verify/revoke/query call below.
-let cachedConnection = null;
+// connection per org is reused across every call that acts as that org.
+const cachedConnections = new Map(); // orgKey -> Promise<{gateway, client, contract}>
 
-async function getFabricContract() {
-  if (!cachedConnection) {
-    cachedConnection = createFabricConnection().catch((err) => {
-      cachedConnection = null;
-      throw err;
-    });
+async function getFabricContract(orgKey = "org1") {
+  if (!cachedConnections.has(orgKey)) {
+    cachedConnections.set(
+      orgKey,
+      createFabricConnection(orgKey).catch((err) => {
+        cachedConnections.delete(orgKey);
+        throw err;
+      })
+    );
   }
-  return cachedConnection;
+  return cachedConnections.get(orgKey);
 }
 
-// Drops the cached connection so the next call reconnects from scratch.
-// Used after a request fails, since the failure might be connection-level
-// (peer restart, dropped gRPC channel) rather than a chaincode rejection --
-// this does not retry the failed call itself, so a write is never resubmitted
-// automatically.
-function invalidateFabricConnection() {
-  const stale = cachedConnection;
-  cachedConnection = null;
+// Drops one org's cached connection so the next call for that org reconnects
+// from scratch. Used after a request fails, since the failure might be
+// connection-level (peer restart, dropped gRPC channel) rather than a
+// chaincode rejection -- this does not retry the failed call itself, so a
+// write is never resubmitted automatically. Other orgs' connections are
+// untouched.
+function invalidateFabricConnection(orgKey = "org1") {
+  const stale = cachedConnections.get(orgKey);
+  cachedConnections.delete(orgKey);
 
   if (stale) {
     stale
@@ -338,6 +368,112 @@ async function clearDispute(mediaType, mediaId) {
   }
 }
 
+// --- Sequential approval workflow (Broadcaster then Auditor) -------------
+//
+// Each of these submits with that org's OWN Fabric identity (org2/org3, not
+// the org1 identity used for registration) - the chaincode checks
+// ctx.clientIdentity.getMSPID() itself, so these calls fail at the chaincode
+// level if the wrong org's cert is used. Backend env vars for org2/org3 are
+// documented in the README's Fabric setup section.
+
+async function approveByBroadcaster(mediaType, mediaId) {
+  if (process.env.FABRIC_ENABLED !== "true") {
+    return { skipped: true, reason: "FABRIC_ENABLED is not true" };
+  }
+  const { contract } = await getFabricContract("org2");
+  try {
+    return await submitWithEndorsingPeers(contract, "ApproveByBroadcaster", [
+      String(mediaType),
+      String(mediaId),
+    ]);
+  } catch (err) {
+    invalidateFabricConnection("org2");
+    throw err;
+  }
+}
+
+async function rejectByBroadcaster(mediaType, mediaId, reason) {
+  if (process.env.FABRIC_ENABLED !== "true") {
+    return { skipped: true, reason: "FABRIC_ENABLED is not true" };
+  }
+  const { contract } = await getFabricContract("org2");
+  try {
+    return await submitWithEndorsingPeers(contract, "RejectByBroadcaster", [
+      String(mediaType),
+      String(mediaId),
+      String(reason || ""),
+    ]);
+  } catch (err) {
+    invalidateFabricConnection("org2");
+    throw err;
+  }
+}
+
+async function approveByAuditor(mediaType, mediaId) {
+  if (process.env.FABRIC_ENABLED !== "true") {
+    return { skipped: true, reason: "FABRIC_ENABLED is not true" };
+  }
+  const { contract } = await getFabricContract("org3");
+  try {
+    return await submitWithEndorsingPeers(contract, "ApproveByAuditor", [
+      String(mediaType),
+      String(mediaId),
+    ]);
+  } catch (err) {
+    invalidateFabricConnection("org3");
+    throw err;
+  }
+}
+
+async function rejectByAuditor(mediaType, mediaId, reason) {
+  if (process.env.FABRIC_ENABLED !== "true") {
+    return { skipped: true, reason: "FABRIC_ENABLED is not true" };
+  }
+  const { contract } = await getFabricContract("org3");
+  try {
+    return await submitWithEndorsingPeers(contract, "RejectByAuditor", [
+      String(mediaType),
+      String(mediaId),
+      String(reason || ""),
+    ]);
+  } catch (err) {
+    invalidateFabricConnection("org3");
+    throw err;
+  }
+}
+
+// Read-only - evaluated with whichever org's identity the queue page is
+// asking on behalf of. Using that org's own identity (rather than org1's)
+// means the query result is exactly what that org's own client would see if
+// it queried the chaincode directly, not a borrowed view.
+async function queryPendingBroadcaster() {
+  if (process.env.FABRIC_ENABLED !== "true") {
+    return { available: false, reason: "FABRIC_ENABLED is not true" };
+  }
+  const { contract } = await getFabricContract("org2");
+  try {
+    const result = await contract.evaluateTransaction("QueryPendingBroadcaster");
+    return { available: true, results: parseFabricResult(result) };
+  } catch (err) {
+    invalidateFabricConnection("org2");
+    return { available: false, reason: err.message };
+  }
+}
+
+async function queryPendingAuditor() {
+  if (process.env.FABRIC_ENABLED !== "true") {
+    return { available: false, reason: "FABRIC_ENABLED is not true" };
+  }
+  const { contract } = await getFabricContract("org3");
+  try {
+    const result = await contract.evaluateTransaction("QueryPendingAuditor");
+    return { available: true, results: parseFabricResult(result) };
+  } catch (err) {
+    invalidateFabricConnection("org3");
+    return { available: false, reason: err.message };
+  }
+}
+
 // Every version this record has held on the ledger, newest first, each with the
 // transaction that produced it.
 async function getMediaHistory(mediaType, mediaId) {
@@ -481,6 +617,12 @@ module.exports = {
   revokeMediaProof,
   reportTamper,
   clearDispute,
+  approveByBroadcaster,
+  rejectByBroadcaster,
+  approveByAuditor,
+  rejectByAuditor,
+  queryPendingBroadcaster,
+  queryPendingAuditor,
   getMediaHistory,
   queryLedger,
   fabricEvents,

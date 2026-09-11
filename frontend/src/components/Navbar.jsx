@@ -12,37 +12,47 @@ export default function Navbar() {
           : "bg-white/90 border-neutral-200"
       }`}
     >
-      {/* Logo */}
-      <div className="flex items-center gap-3">
-        {/* logo-mark is the emblem cropped out of the full artwork; the
-            original 3:2 illustration was unreadable squeezed into this box. */}
+      {/* Logo - clicking it goes home, like any site's logo */}
+      <Link to="/" className="flex items-center gap-3 group flex-shrink-0">
+        {/* Full logo.png is shield-emblem-over-wordmark (tall); object-top
+            keeps this small square crop on the shield instead of the text
+            below it, which would otherwise get cut off by object-cover. */}
         <img
-          src="/logo-mark.png"
+          src="/logo.png"
           alt="TrustStream"
-          className="w-10 h-10 rounded-xl object-cover shadow-sm"
+          className="w-10 h-10 rounded-xl object-cover object-top shadow-sm transition-transform duration-200 group-hover:scale-105"
         />
 
         <h1
           className={`text-xl font-bold tracking-tight transition-colors ${
-            isDark ? "text-white" : "text-neutral-900"
+            isDark ? "text-white group-hover:text-neutral-200" : "text-neutral-900 group-hover:text-neutral-700"
           }`}
         >
           TrustStream
         </h1>
-      </div>
+      </Link>
 
       {/* Right side */}
       <div className="flex items-center gap-3">
-        {/* Public verify-by-upload link */}
+        {/* How It Works - plain-language explainer, most prominent link
+            since it's aimed at non-technical visitors (thesis examiners). */}
         <Link
-          to="/verify"
-          className={`hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${
+          to="/how-it-works"
+          className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white transition-colors shadow-lg shadow-blue-900/20"
+        >
+          💡 How It Works
+        </Link>
+
+        {/* Platform analytics link */}
+        <Link
+          to="/analytics"
+          className={`hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${
             isDark
-              ? "border-neutral-700 text-neutral-300 hover:border-blue-500 hover:text-blue-400"
-              : "border-neutral-200 text-neutral-600 hover:border-blue-400 hover:text-blue-600"
+              ? "border-neutral-700 text-neutral-300 hover:border-violet-500 hover:text-violet-400"
+              : "border-neutral-200 text-neutral-600 hover:border-violet-400 hover:text-violet-600"
           }`}
         >
-          🔍 Verify Content
+          📊 Analytics
         </Link>
 
         {/* LIVE badge */}

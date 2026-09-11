@@ -54,15 +54,9 @@ export const imageAPI = {
   clearDispute: (imageId) => api.post(`/upload/images/${imageId}/clear-dispute`),
 };
 
-// ─── Public Verify-by-Upload API ──────────────────────────
-export const verifyAPI = {
-  verifyFile: (file) => {
-    const formData = new FormData();
-    formData.append("file", file);
-    return api.post("/upload/public-verify", formData, {
-      headers: { "Content-Type": "multipart/form-data" },
-    });
-  },
+// ─── Platform Statistics API ──────────────────────────────
+export const statsAPI = {
+  getStats: () => api.get("/upload/stats"),
 };
 
 // ─── Unified Feed API ─────────────────────────────────────
@@ -83,3 +77,17 @@ export const timelineAPI = {
 export const syncAPI = {
   syncFromBlockchain: () => api.post("/upload/sync-from-blockchain"),
 };
+
+// ─── Org Approval Portal API (Broadcaster / Auditor) ──────
+// Passcode-gated: login() checks it once, the returned passcode is then
+// sent as a header on every subsequent call from the portal page (kept in
+// sessionStorage by the page itself, not here).
+export const createOrgPortalAPI = (org) => ({
+  login: (passcode) => api.post(`/upload/${org}/login`, { passcode }),
+  getPending: (passcode) =>
+    api.get(`/upload/${org}/pending`, { headers: { "X-Org-Passcode": passcode } }),
+  approve: (passcode, mediaType, mediaId) =>
+    api.post(`/upload/${org}/${mediaType}/${mediaId}/approve`, {}, { headers: { "X-Org-Passcode": passcode } }),
+  reject: (passcode, mediaType, mediaId, reason) =>
+    api.post(`/upload/${org}/${mediaType}/${mediaId}/reject`, { reason }, { headers: { "X-Org-Passcode": passcode } }),
+});
