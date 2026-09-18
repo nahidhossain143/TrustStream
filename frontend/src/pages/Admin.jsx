@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef } from "react";
-import { useNavigate } from "react-router-dom";
 import { UserButton, useUser } from "@clerk/clerk-react";
 import api, { imageAPI, API_ORIGIN } from "../services/api";
 import Navbar from "../components/Navbar";

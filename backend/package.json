@@ -15,7 +15,6 @@
     "@grpc/grpc-js": "^1.14.4",
     "@hyperledger/fabric-gateway": "^1.12.0",
     "@hyperledger/fabric-protos": "^0.3.7",
-    "@pinata/sdk": "^2.1.0",
     "axios": "^1.13.6",
     "cors": "^2.8.6",
     "dotenv": "^17.3.1",

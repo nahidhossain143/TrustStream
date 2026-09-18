@@ -53,40 +53,6 @@ const buildMerkleTree = (hashArray) => {
   };
 };
 
-const getProof = (tree, leafHash, leafIndex) => {
-  if (!tree || !Array.isArray(tree.layers)) {
-    throw new Error("Invalid Merkle tree");
-  }
-
-  let index = Number(leafIndex);
-  const proof = [];
-
-  for (let layerIndex = 0; layerIndex < tree.layers.length - 1; layerIndex += 1) {
-    const layer = tree.layers[layerIndex].map(normalizeHash);
-    const pairIndex = index % 2 === 0 ? index + 1 : index - 1;
-    const sibling = layer[pairIndex] || layer[index];
-
-    proof.push(`0x${sibling}`);
-    index = Math.floor(index / 2);
-  }
-
-  return proof;
-};
-
-const verifyProof = (proof, leafHash, root) => {
-  if (!Array.isArray(proof)) return false;
-
-  let computedHash = normalizeHash(leafHash);
-
-  for (const siblingHash of proof) {
-    computedHash = hashPair(computedHash, siblingHash);
-  }
-
-  return computedHash === normalizeHash(root);
-};
-
 module.exports = {
   buildMerkleTree,
-  getProof,
-  verifyProof,
 };

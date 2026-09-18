@@ -34,6 +34,7 @@
 - [Fabric Chaincode Reference](#fabric-chaincode-reference)
 - [Tamper Reports & Dispute Governance](#tamper-reports--dispute-governance)
 - [Sequential Approval Workflow](#sequential-approval-workflow)
+- [Pre-Approval Integrity Check](#pre-approval-integrity-check)
 - [C2PA Implementation](#c2pa-implementation)
 - [Forensics (AI-Free)](#forensics-ai-free)
 - [Forensic Analysis Modules](#forensic-analysis-modules)
@@ -694,7 +695,7 @@ If containers are stopped for any reason, just re-run `./network.sh up createCha
 - Only the **Auditor** can clear a dispute back to **Active** via the **Clear Dispute (Auditor only)** button — the prior tamper reports remain visible in the ledger history, they're just not erased
 
 ### Restore from Blockchain
-- Hit `POST /api/upload/sync-from-blockchain` (button available on detail pages and via API)
+- Hit `POST /api/upload/sync-from-blockchain` (API only — no button wired into the UI currently)
 - Runs `QueryByMediaType` against the Fabric ledger → fetches metadata from IPFS → rebuilds local catalog for both videos AND images
 - A fresh machine can fully recover the platform without ever touching the original uploader
 
@@ -762,10 +763,12 @@ All require `X-Org-Passcode` header except `/login`, which takes the passcode in
 |--------|----------|-------------|
 | `POST` | `/api/upload/broadcaster/login` | `{ passcode }` → `{ ok: true }` or 401 |
 | `GET` | `/api/upload/broadcaster/pending` | Items with `status: "pending_broadcaster"`, enriched with local catalog data |
+| `GET` | `/api/upload/broadcaster/:mediaType/:mediaId/check` | Pre-approval integrity check — re-hashes the file, cross-verifies against all 3 orgs' Fabric peers independently, validates the C2PA manifest, and surfaces the upload-time forensic verdict. See [Pre-Approval Integrity Check](#pre-approval-integrity-check) |
 | `POST` | `/api/upload/broadcaster/:mediaType/:mediaId/approve` | Submits `ApproveByBroadcaster` as Org2MSP → `pending_auditor` |
 | `POST` | `/api/upload/broadcaster/:mediaType/:mediaId/reject` | `{ reason }` → Submits `RejectByBroadcaster` as Org2MSP → `rejected` |
 | `POST` | `/api/upload/auditor/login` | Same shape, `AUDITOR_PORTAL_PASSCODE` |
 | `GET` | `/api/upload/auditor/pending` | Items with `status: "pending_auditor"` |
+| `GET` | `/api/upload/auditor/:mediaType/:mediaId/check` | Same integrity check as the Broadcaster's, gated by `AUDITOR_PORTAL_PASSCODE` |
 | `POST` | `/api/upload/auditor/:mediaType/:mediaId/approve` | Submits `ApproveByAuditor` as Org3MSP → `active` |
 | `POST` | `/api/upload/auditor/:mediaType/:mediaId/reject` | `{ reason }` → Submits `RejectByAuditor` as Org3MSP → `rejected` |
 
@@ -859,12 +862,9 @@ TrustStream/
 │       │   └── Admin.jsx                    # Tabbed upload (Video + Image), thumbnail picker, pipeline UI — gated by Clerk when VITE_REQUIRE_ADMIN_AUTH=true
 │       ├── components/
 │       │   ├── VideoPlayer.jsx              # hls.js + per-segment SHA-256 + tamper overlay + posterUrl
-│       │   ├── NewsCard.jsx                 # Reusable card (legacy; current Home uses inline cards)
 │       │   ├── ForensicPanel.jsx            # Visualizes the 4 video forensic modules
-│       │   ├── VerificationBadge.jsx        # Multi-layer verification badge
 │       │   ├── charts/                      # Hand-written inline-SVG chart components (Bar/GroupedBar/Donut) for Analytics.jsx
-│       │   ├── Navbar.jsx                   # Reader navbar (logo + theme toggle + live badge + Analytics link)
-│       │   └── SyncButton.jsx               # Sync-from-blockchain trigger
+│       │   └── Navbar.jsx                   # Reader navbar (logo + theme toggle + live badge + Analytics link)
 │       ├── services/
 │       │   ├── api.js                       # videoAPI, imageAPI, feedAPI, statsAPI, syncAPI, timelineAPI
 │       │   └── hash.js                      # Browser SHA-256 (Web Crypto API)
@@ -914,8 +914,8 @@ Every write to `truststreamcc` requires the channel's `AND(Org1MSP.peer, Org2MSP
 
 | Function | What it does |
 |----------|-------------|
-| `RegisterVideoProof(videoId, title, metadataCid, merkleRoot, totalSegments)` | **Org1MSP (NewsAgency) only.** Creates a new video proof, `status: "pending_broadcaster"`. Fails if the ID already exists or the caller isn't NewsAgency. |
-| `RegisterImageProof(imageId, title, sha256Hash, ipfsCid, metadataCid, c2paHash)` | **Org1MSP (NewsAgency) only.** Creates a new image proof, `status: "pending_broadcaster"`. |
+| `RegisterVideoProof(videoId, title, metadataCid, merkleRoot, totalSegments, metadataJson)` | **Org1MSP (NewsAgency) only.** Creates a new video proof, `status: "pending_broadcaster"`. Fails if the ID already exists or the caller isn't NewsAgency. `metadataJson` (added in chaincode v3.2) is parsed and stored as `proof.metadata` directly in Fabric's own state — the ledger no longer depends on an external IPFS pin just to hold what was actually registered. `metadataCid` is kept alongside it purely for backward compatibility with proofs registered before this field existed, and as an optional external mirror. |
+| `RegisterImageProof(imageId, title, sha256Hash, ipfsCid, metadataCid, c2paHash, metadataJson)` | **Org1MSP (NewsAgency) only.** Creates a new image proof, `status: "pending_broadcaster"`. Same `metadataJson` → `proof.metadata` handling as above. |
 | `ApproveByBroadcaster(mediaType, mediaId)` / `RejectByBroadcaster(mediaType, mediaId, reason)` | **Org2MSP (Broadcaster) only.** Approve moves `pending_broadcaster` → `pending_auditor` (emits `MediaApprovedByBroadcaster`); reject moves it to `rejected` (emits `MediaRejected`). Fails if the item isn't currently `pending_broadcaster`. |
 | `ApproveByAuditor(mediaType, mediaId)` / `RejectByAuditor(mediaType, mediaId, reason)` | **Org3MSP (Auditor) only.** Approve moves `pending_auditor` → `active` (emits `MediaFullyApproved`) — this is what `VerifyVideoProof`/`VerifyImageProof` call trustworthy. Reject moves it to `rejected`. Fails if the item isn't currently `pending_auditor`. |
 | `EndorseMedia(mediaType, mediaId)` | Marks an org's explicit endorsement flag (registration already implies all 3 endorsed, since the channel's endorsement policy required it to commit at all). |
@@ -974,6 +974,19 @@ NewsAgency uploads
 ### Access: `/broadcaster` and `/auditor`
 
 Each portal is a single shared passcode (`BROADCASTER_PORTAL_PASSCODE`/`AUDITOR_PORTAL_PASSCODE`), checked via an `X-Org-Passcode` header, rate-limited against guessing. This is deliberately a simple gate, not a full per-user auth system — good enough to demonstrate that a genuinely distinct party is reviewing content with its own identity, not meant to survive a real multi-tenant deployment (a real consortium member would run this as its own separate service; see the architecture discussion this feature was built from).
+
+## Pre-Approval Integrity Check
+
+The Broadcaster/Auditor portals originally showed nothing but a title, thumbnail, and Approve/Reject buttons — an org could approve anything without actually checking whether it was genuine. Each pending item's card now runs an automatic check as the queue loads (`GET /broadcaster|auditor/:mediaType/:mediaId/check`) and surfaces four independent signals before a decision is made:
+
+| Signal | What it actually proves |
+|--------|--------------------------|
+| **Hash** | The file re-hashed from disk/IPFS right now still matches what was registered — nothing has drifted locally since upload. |
+| **Fabric** | Org1, Org2, and Org3's peers are queried **independently and in parallel**, not just one — `valid` is only `true` if all 3 agree on the hash and that it hasn't been revoked. Querying a single peer isn't a complete guarantee on its own (see the real CouchDB key-ordering bug documented above), so this cross-checks all three rather than trusting one. |
+| **C2PA** | The embedded manifest's cryptographic signature and cert chain are independently re-verified, not just read as metadata. |
+| **Forensics** | The upload-time AI-free forensic verdict (Authentic / Suspicious / Likely Manipulated — see [Forensics (AI-Free)](#forensics-ai-free)). This is the only one of the four that says anything about the *content itself*: hash/Fabric/C2PA all prove a file hasn't been tampered with **since registration**, but a deepfake or a pre-manipulated clip would pass all three forever, since nothing about it ever changes after upload. The forensic verdict is what's actually meant to catch that a video/image is fabricated in the first place. |
+
+Approve doesn't hard-block on a failed check — instead it routes through an **"Approve Anyway"** confirmation, so a reviewer can't rubber-stamp past a red flag by accident, but still has final judgment for edge cases (e.g. a transient IPFS gateway hiccup).
 
 ### Verified end-to-end through the real API, including a real bug along the way
 
@@ -1245,12 +1258,12 @@ Profiling why single-worker latency was so much higher than 5/10-worker latency 
 | **Video original MP4** | ❌ Temp | ❌ | ❌ | Deleted after FFmpeg |
 | **Video HLS segments** | ✅ `public/streams/` | ✅ Pinned | *(covered by Merkle root)* | Local copy serves live playback (see note below); IPFS copy is independently verifiable and playable via the "🌐 Direct from IPFS" toggle on the video detail page |
 | **Video .c2pa sidecars** | ✅ Next to segments | *(in metadata JSON)* | — | Allows offline verification |
-| **Video metadata JSON** | — | ✅ Pinned | *(cid anchored)* | Sole source for sync recovery |
-| **Video forensic report** | — | ✅ Pinned | *(cid in metadata)* | — |
+| **Video metadata JSON** | — | ⚠ Best-effort mirror | ✅ Full content (`proof.metadata`, chaincode v3.2+) | The ledger copy is authoritative — a failed/blocked IPFS pin no longer blocks registration or loses the metadata, it just costs the convenience gateway URL |
+| **Video forensic report** | — | ✅ Pinned | *(summary embedded in `proof.metadata`)* | — |
 | **Video thumbnail** | ✅ `public/thumbnails/` | — | — | Poster image, not part of provenance |
 | **Image bytes** | ❌ Deleted after pin | ✅ Pinned | *(hash anchored)* | IPFS-only |
 | **Image C2PA sidecar** | ❌ Never written to disk | ✅ Pinned | *(hash anchored)* | IPFS-only |
-| **Image metadata JSON** | — | ✅ Pinned | *(cid anchored)* | Includes sidecar CID + forensics |
+| **Image metadata JSON** | — | ⚠ Best-effort mirror | ✅ Full content (`proof.metadata`, chaincode v3.2+) | Same authoritative-ledger-copy reasoning as video metadata above |
 | **Manifest catalog (cache)**| ✅ `data/catalog/*` | — | — | Reproducible from the ledger via sync |
 
 > **Note:** The local manifest catalog is just a cache — every byte of canonical content lives on IPFS, every authoritative status lives on the Fabric ledger.
@@ -1303,6 +1316,17 @@ The thesis core promise is **"uploaded content cannot be deleted."** This is enf
 ---
 
 ## What's New
+
+### v14 — Pre-Approval Integrity Check, Metadata Moved On-Chain, Dead Code Cleanup (September 2026)
+
+* **Broadcaster/Auditor portals stopped being a rubber stamp:** they previously showed nothing but a title, thumbnail, and Approve/Reject buttons — an org could approve anything without checking whether it was genuine. Each pending item's card now runs an automatic check (`GET /broadcaster|auditor/:mediaType/:mediaId/check`) surfacing four independent signals — Hash, Fabric, C2PA, and the upload-time forensic verdict — before a decision is made. See [Pre-Approval Integrity Check](#pre-approval-integrity-check).
+* **The Fabric signal now cross-checks all 3 orgs independently, not just one:** `verifyVideoProof`/`verifyImageProof` previously always queried Org1's peer only. Now all 3 orgs' peers are queried in parallel and compared — `valid` is only `true` if all 3 agree, and the response names which org(s) disagree if not. Motivated directly by the real CouchDB key-ordering bug documented above: a single-peer read isn't a complete guarantee on its own in this project's own history.
+* **Found and fixed a logic bug in the check itself:** the first version of the Fabric signal reused `VerifyVideoProof`/`VerifyImageProof`'s notion of `valid` (hash matches **and** `status === "active"`), which is correct for the public "Check Authenticity" button but wrong here — an item sitting in the approval queue is by definition not yet active, so it made every pending item fail forever, including clean ones. Fixed to check hash-match-and-not-revoked instead, which is the right bar pre-approval.
+* **Forensic verdict wired into the same gate:** hash/Fabric/C2PA only prove a file hasn't changed *since registration* — a deepfake or pre-manipulated clip would pass all three forever, since nothing about it changes after upload. The AI-free forensic verdict computed at upload time (Authentic/Suspicious/Likely Manipulated) is the actual content-authenticity signal and is now folded into the same pass/fail as the other three, instead of sitting unused off-portal.
+* **A failed check doesn't hard-block Approve** — it routes through an "Approve Anyway" confirmation instead, so an org can't rubber-stamp past a red flag by accident but keeps final judgment for edge cases.
+* **Fixed a real `/feed` bug found along the way:** the public feed only excluded items literally mid-approval (`pending_broadcaster`/`pending_auditor`) — but an item whose IPFS upload failed partway (common under Pinata rate-limiting/quota issues) never reaches Fabric registration at all, so it had no `fabricResult` to be "pending" with and fell straight through onto the public feed, fully bypassing Broadcaster/Auditor entirely rather than merely waiting on them. Rewritten as an allowlist of genuinely public post-approval statuses (`active`/`disputed`/`revoked`) instead of a blocklist of known-pending ones, so anything not actually approved is hidden by default regardless of why.
+* **Chaincode v3.2 (Sequence 5): metadata now lives directly on the Fabric ledger, not just a Pinata CID pointer.** `RegisterVideoProof`/`RegisterImageProof` gained a `metadataJson` argument, parsed and stored as `proof.metadata` in the chaincode's own state - replicated across all 3 orgs' peers, immutable, no longer dependent on an external pinning service staying up. `metadataCid` is kept for backward compatibility with proofs registered before this field existed. Mirroring the metadata to IPFS is now best-effort only (a failed pin no longer aborts registration the way it used to for video uploads). Verified with a direct on-chain test invoke before rollout. See [Fabric Chaincode Reference](#fabric-chaincode-reference) and [Storage Summary](#storage-summary).
+* **Dead code cleanup:** removed the orphaned `news.controller.js`/`news.data.js` (never wired into any route), three unreferenced frontend components (`NewsCard.jsx`, `SyncButton.jsx`, `VerificationBadge.jsx`), unused `merkle.service.js` proof-verification helpers (`getProof`/`verifyProof` - only `buildMerkleTree` was ever called), unused `videoAPI.verify`/`getForensics` client methods, an unused `useNavigate` import, and the unused `@pinata/sdk` dependency (the app talks to Pinata directly over its REST API via axios, not the SDK).
 
 ### v13 — Sequential Approval Workflow, Multi-Org Identity, Real CouchDB Bug Fix (September 2026)
 
