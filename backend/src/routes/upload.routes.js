@@ -128,6 +128,18 @@ const portalLimiter = rateLimit({
   message: { error: "Too many attempts - try again later." },
 });
 
+// Read-only portal calls (pending queue, per-item integrity check) aren't
+// passcode guesses - they fire once per item every time the queue loads, so
+// they need real headroom. Login/approve/reject stay on the stricter
+// portalLimiter above.
+const portalDataLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many requests - try again later." },
+});
+
 router.use(generalLimiter);
 
 // --- ID Param Validation --------------------------------------------
@@ -659,6 +671,13 @@ const syncVideoToIpfsAndChain = async (videoId) => {
   const videoC2paManifest = buildVideoManifest(manifest, c2paResults);
   metadataPayload.c2paVideoManifest = videoC2paManifest;
 
+  // The metadata JSON is registered directly on the Fabric ledger below
+  // (see registerVideoProof's `metadata` field) - that's the authoritative
+  // copy now, replicated across all 3 orgs' peers, not dependent on any
+  // third-party pinning service. Still best-effort-mirroring it to IPFS
+  // here gives it a convenient public gateway URL, but a failure (rate
+  // limit, quota, outage) must not block registration anymore the way it
+  // used to when the CID was the only place the metadata lived.
   const metadataCid = await uploadMetadataToIPFS(metadataPayload);
   const metadataUrl = buildGatewayUrl(metadataCid);
 
@@ -668,15 +687,6 @@ const syncVideoToIpfsAndChain = async (videoId) => {
     metadataUrl,
     ipfsStatus: metadataCid ? "uploaded" : "partial",
   }));
-
-  if (!metadataCid) {
-    updateManifest(videoId, (cur) => ({
-      ...cur,
-      fabricStatus: "skipped",
-      backgroundError: "Metadata upload to IPFS failed",
-    }));
-    return;
-  }
 
   try {
     updateManifest(videoId, (cur) => ({
@@ -696,6 +706,7 @@ const syncVideoToIpfsAndChain = async (videoId) => {
       metadataCid,
       merkleRoot,
       totalSegments: manifest.totalSegments,
+      metadata: metadataPayload,
     });
 
     console.log("[fabric] RegisterVideoProof success:", fabricResult);
@@ -828,9 +839,13 @@ const syncImageToIpfsAndChain = async (imageId, opts = {}) => {
     return;
   }
 
-  // Step 3: Upload metadata JSON to IPFS (includes forensic summary).
-  // No separate C2PA sidecar to pin anymore - the manifest is embedded
-  // directly in the image bytes already pinned at `ipfsCid` above.
+  // Step 3: best-effort mirror of the metadata JSON to IPFS (includes
+  // forensic summary). The authoritative copy is registered directly on
+  // the Fabric ledger below (registerImageProof's `metadata` field), so a
+  // failure here (rate limit, quota, outage) only costs the convenience
+  // gateway URL, not the registration itself. No separate C2PA sidecar to
+  // pin anymore - the manifest is embedded directly in the image bytes
+  // already pinned at `ipfsCid` above.
   manifest = readImageManifest(imageId);
   const metadataPayload = buildImageMetadataPayload({ ...manifest, ipfsCid });
 
@@ -856,6 +871,7 @@ const syncImageToIpfsAndChain = async (imageId, opts = {}) => {
         ipfsCid,
         metadataCid: metadataCid || "",
         c2paHash: manifest.c2paManifestHash || "",
+        metadata: metadataPayload,
       }),
       20000,
       "Fabric RegisterImageProof"
@@ -1680,6 +1696,148 @@ const enrichPendingEntry = (entry) => {
   };
 };
 
+// Systematic pre-approval integrity check for the Broadcaster/Auditor
+// portals - reuses the exact re-hash + Fabric-ledger + C2PA verification
+// the detail page's "Check Authenticity" button runs, so an org reviewing
+// its queue sees objective pass/fail signals instead of approving on
+// title and thumbnail alone.
+const runIntegrityCheck = async (mediaType, mediaId) => {
+  const manifest = mediaType === "image" ? readImageManifest(mediaId) : readManifest(mediaId);
+  if (!manifest) return { error: `${mediaType === "image" ? "Image" : "Video"} not found` };
+
+  let hash = { checked: false };
+  let currentDigest = null;
+
+  if (mediaType === "image") {
+    if (!manifest.ipfsCid) {
+      hash = { checked: true, fileIntact: false, error: "Image has no IPFS copy to re-hash" };
+    } else {
+      try {
+        const response = await fetch(buildGatewayUrl(manifest.ipfsCid));
+        if (!response.ok) throw new Error(`IPFS gateway returned ${response.status}`);
+        const bytes = Buffer.from(await response.arrayBuffer());
+        currentDigest = crypto.createHash("sha256").update(bytes).digest("hex");
+        hash = {
+          checked: true,
+          fileIntact: currentDigest === manifest.sha256Hash,
+          current: currentDigest,
+          registered: manifest.sha256Hash,
+        };
+      } catch (err) {
+        hash = { checked: true, fileIntact: false, error: err.message };
+      }
+    }
+  } else {
+    const missingFile = (manifest.segments || []).find(
+      (seg) => !seg.localPath || !fs.existsSync(seg.localPath)
+    );
+    if (missingFile) {
+      hash = { checked: true, fileIntact: false, error: `Segment ${missingFile.index} is no longer available locally to re-hash` };
+    } else {
+      try {
+        const fresh = await recomputeMerkleRootFromDisk(manifest.segments || []);
+        currentDigest = fresh.merkleRoot;
+        hash = {
+          checked: true,
+          fileIntact: currentDigest === manifest.merkleRoot,
+          current: currentDigest,
+          registered: manifest.merkleRoot,
+        };
+      } catch (err) {
+        hash = { checked: true, fileIntact: false, error: err.message };
+      }
+    }
+  }
+
+  let fabric = { checked: false };
+  if (manifest.fabricStatus !== "ready") {
+    fabric = { checked: true, valid: false, error: "No confirmed Fabric registration to verify against" };
+  } else if (currentDigest) {
+    try {
+      // Query all 3 orgs' peers independently instead of trusting Org1
+      // alone - the endorsement policy already required all 3 to agree at
+      // write time, but this project has hit a real case where a peer's
+      // own CouchDB drifted from the others (see the canonicalJSON fix),
+      // so a single-peer read isn't a complete guarantee on its own.
+      const [org1, org2, org3] = await Promise.all([
+        mediaType === "image" ? verifyImageProof(mediaId, currentDigest, "org1") : verifyVideoProof(mediaId, currentDigest, "org1"),
+        mediaType === "image" ? verifyImageProof(mediaId, currentDigest, "org2") : verifyVideoProof(mediaId, currentDigest, "org2"),
+        mediaType === "image" ? verifyImageProof(mediaId, currentDigest, "org3") : verifyVideoProof(mediaId, currentDigest, "org3"),
+      ]);
+
+      const orgResults = { NewsAgency: org1, Broadcaster: org2, Auditor: org3 };
+      const integrityOk = (r) => r.available && r.hashMatches === true && r.revoked !== true;
+      const agreeingOrgs = Object.entries(orgResults).filter(([, r]) => integrityOk(r)).map(([name]) => name);
+      const disagreeingOrgs = Object.entries(orgResults).filter(([, r]) => !integrityOk(r)).map(([name]) => name);
+
+      fabric = {
+        checked: true,
+        valid: disagreeingOrgs.length === 0,
+        agreement: `${agreeingOrgs.length}/3`,
+        disagreeingOrgs,
+        orgs: orgResults,
+      };
+    } catch (err) {
+      fabric = { checked: true, valid: false, error: err.message };
+    }
+  } else {
+    fabric = { checked: true, valid: false, error: "Skipped - file could not be re-hashed" };
+  }
+
+  let c2pa = { checked: true, signed: false, valid: false, error: null };
+  try {
+    if (mediaType === "image") {
+      c2pa.signed = manifest.c2paSigned || false;
+      const result = await verifyImageC2pa(manifest);
+      c2pa.valid = result.valid === true;
+      c2pa.error = result.error || (c2pa.signed ? null : "Not C2PA-signed");
+    } else {
+      c2pa.signed = manifest.sourceC2paStatus === "signed";
+      if (!manifest.sourceIpfsCid) {
+        c2pa.error = "Source MP4 not yet pinned to IPFS";
+      } else {
+        const buffer = await fetchBufferFromIPFS(manifest.sourceIpfsCid);
+        const result = buffer
+          ? await verifyEmbeddedAsset(buffer, "video/mp4")
+          : { valid: false, error: "Failed to fetch source MP4 from IPFS" };
+        c2pa.valid = result.valid === true;
+        c2pa.error = result.error || null;
+      }
+    }
+  } catch (err) {
+    c2pa.checked = true;
+    c2pa.valid = false;
+    c2pa.error = err.message;
+  }
+
+  // Hash/Fabric/C2PA only prove the file hasn't been altered since it was
+  // registered - they say nothing about whether the content itself is
+  // genuine (a deepfake or pre-manipulated clip would pass all three
+  // forever, since nothing about it changes after upload). The forensic
+  // verdict computed at upload time (see forensics.service.js /
+  // image-forensics.service.js) is the actual content-authenticity signal,
+  // so it belongs alongside the integrity checks here, not left buried
+  // off-portal where Broadcaster/Auditor could approve a "Likely
+  // Manipulated" item without ever seeing that label.
+  const forensicsReady = manifest.forensicStatus === "ready";
+  const forensics = {
+    checked: forensicsReady,
+    label: forensicsReady ? manifest.forensics?.finalLabel || null : null,
+    riskScore: forensicsReady
+      ? (mediaType === "image" ? manifest.forensics?.imageRiskScore : manifest.forensics?.videoRiskScore) ?? null
+      : null,
+  };
+  const forensicsOk = forensics.checked && forensics.label === "Authentic";
+
+  return {
+    hash,
+    fabric,
+    c2pa,
+    forensics,
+    passed: hash.fileIntact === true && fabric.valid === true && c2pa.signed === true && c2pa.valid === true && forensicsOk,
+  };
+};
+
 router.post("/broadcaster/login", portalLimiter, (req, res) => {
   if (req.body?.passcode !== process.env.BROADCASTER_PORTAL_PASSCODE) {
     return res.status(401).json({ error: "Invalid passcode" });
@@ -1687,10 +1845,16 @@ router.post("/broadcaster/login", portalLimiter, (req, res) => {
   res.json({ ok: true });
 });
 
-router.get("/broadcaster/pending", portalLimiter, requireOrgPasscode("BROADCASTER_PORTAL_PASSCODE"), async (req, res) => {
+router.get("/broadcaster/pending", portalDataLimiter, requireOrgPasscode("BROADCASTER_PORTAL_PASSCODE"), async (req, res) => {
   const result = await queryPendingBroadcaster();
   if (!result.available) return res.status(503).json({ error: result.reason });
   res.json({ items: (result.results || []).map(enrichPendingEntry) });
+});
+
+router.get("/broadcaster/:mediaType/:mediaId/check", portalDataLimiter, requireOrgPasscode("BROADCASTER_PORTAL_PASSCODE"), async (req, res) => {
+  const result = await runIntegrityCheck(req.params.mediaType, req.params.mediaId);
+  if (result.error) return res.status(404).json(result);
+  res.json(result);
 });
 
 // The chain itself is always the source of truth (confirmed by the
@@ -1734,10 +1898,16 @@ router.post("/auditor/login", portalLimiter, (req, res) => {
   res.json({ ok: true });
 });
 
-router.get("/auditor/pending", portalLimiter, requireOrgPasscode("AUDITOR_PORTAL_PASSCODE"), async (req, res) => {
+router.get("/auditor/pending", portalDataLimiter, requireOrgPasscode("AUDITOR_PORTAL_PASSCODE"), async (req, res) => {
   const result = await queryPendingAuditor();
   if (!result.available) return res.status(503).json({ error: result.reason });
   res.json({ items: (result.results || []).map(enrichPendingEntry) });
+});
+
+router.get("/auditor/:mediaType/:mediaId/check", portalDataLimiter, requireOrgPasscode("AUDITOR_PORTAL_PASSCODE"), async (req, res) => {
+  const result = await runIntegrityCheck(req.params.mediaType, req.params.mediaId);
+  if (result.error) return res.status(404).json(result);
+  res.json(result);
 });
 
 router.post("/auditor/:mediaType/:mediaId/approve", portalLimiter, requireOrgPasscode("AUDITOR_PORTAL_PASSCODE"), async (req, res) => {
@@ -1851,11 +2021,25 @@ router.get("/feed", async (req, res) => {
     // workflow yet isn't something a public reader should see, the same way
     // a real newsroom wouldn't publish an unapproved draft. Excluded from
     // every view except an explicit ?status=pending request.
+    //
+    // This is an ALLOWLIST of genuinely public post-approval states, not a
+    // blocklist of known-pending ones - an item whose Fabric registration
+    // was itself skipped or failed (e.g. an earlier IPFS upload step
+    // aborted the pipeline before RegisterVideoProof/RegisterImageProof
+    // was ever called) has no fabricResult at all, so a blocklist keyed on
+    // fabricResult.status would never catch it and it would leak onto the
+    // feed exactly as if it were normal published content - never having
+    // gone through Broadcaster/Auditor at all rather than merely waiting
+    // on them.
     const PENDING_STATUSES = ["pending_broadcaster", "pending_auditor"];
-    const isPending = (item) => PENDING_STATUSES.includes(item.fabricResult?.status);
+    const PUBLIC_STATUSES = ["active", "disputed", "revoked"];
+    const isPending = (item) =>
+      PENDING_STATUSES.includes(item.fabricResult?.status) ||
+      (item.fabricStatus !== "ready" && item.fabricResult?.status !== "rejected");
+    const isPublic = (item) => PUBLIC_STATUSES.includes(item.fabricResult?.status);
 
     if (status !== "pending") {
-      feed = feed.filter((item) => !isPending(item));
+      feed = feed.filter(isPublic);
     }
 
     // Counts reflect the search filter but not the mediaType/status pills

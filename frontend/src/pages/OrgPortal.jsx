@@ -3,6 +3,18 @@ import Navbar from "../components/Navbar";
 import { createOrgPortalAPI, API_ORIGIN } from "../services/api";
 import { useTheme } from "../context/ThemeContext";
 
+// One badge in a pending item's integrity-check row (Hash / Fabric / C2PA).
+function CheckPill({ label, ok, isDark }) {
+  const cls = ok
+    ? (isDark ? "bg-emerald-500/10 text-emerald-400" : "bg-emerald-50 text-emerald-700")
+    : (isDark ? "bg-red-500/10 text-red-400" : "bg-red-50 text-red-700");
+  return (
+    <span className={`text-[10px] font-mono px-2 py-1 rounded-full ${cls}`}>
+      {ok ? "✓" : "✗"} {label}
+    </span>
+  );
+}
+
 // Shared implementation for both /broadcaster and /auditor - same workflow,
 // same UI, only the org identity, label, and next-stage copy differ. Each
 // instance gets its own sessionStorage key so logging into one doesn't
@@ -24,11 +36,42 @@ export default function OrgPortal({ org, orgLabel, accentColor, nextStageLabel }
   const [actioningId, setActioningId] = useState(null);
   const [rejectingId, setRejectingId] = useState(null);
   const [rejectReason, setRejectReason] = useState("");
+  // Per-item integrity check results, keyed by "mediaType:mediaId" -
+  // {status: "checking"|"done"|"error", result, error}. Runs automatically
+  // for every pending item so Broadcaster/Auditor see an objective
+  // hash/Fabric/C2PA signal instead of approving on title + thumbnail alone.
+  const [checks, setChecks] = useState({});
+  // Item awaiting the "Approve Anyway" confirmation because its check failed.
+  const [confirmingId, setConfirmingId] = useState(null);
 
   const bg = isDark ? "bg-[#080808]" : "bg-neutral-100";
   const text = isDark ? "text-white" : "text-neutral-900";
   const textMuted = isDark ? "text-neutral-500" : "text-neutral-400";
   const cardBg = isDark ? "bg-neutral-900 border-neutral-800" : "bg-white border-neutral-200";
+
+  const runChecks = useCallback((pendingItems, storedPasscode) => {
+    setChecks((prev) => {
+      const next = { ...prev };
+      pendingItems.forEach((item) => {
+        next[`${item.mediaType}:${item.mediaId}`] = { status: "checking" };
+      });
+      return next;
+    });
+
+    pendingItems.forEach((item) => {
+      const key = `${item.mediaType}:${item.mediaId}`;
+      api.check(storedPasscode, item.mediaType, item.mediaId)
+        .then((res) => {
+          setChecks((prev) => ({ ...prev, [key]: { status: "done", result: res.data } }));
+        })
+        .catch((err) => {
+          setChecks((prev) => ({
+            ...prev,
+            [key]: { status: "error", error: err.response?.data?.error || err.message },
+          }));
+        });
+    });
+  }, []);
 
   const fetchPending = useCallback(() => {
     const storedPasscode = sessionStorage.getItem(sessionKey);
@@ -36,7 +79,11 @@ export default function OrgPortal({ org, orgLabel, accentColor, nextStageLabel }
     setLoading(true);
     setError(null);
     api.getPending(storedPasscode)
-      .then((res) => setItems(res.data?.items || []))
+      .then((res) => {
+        const pendingItems = res.data?.items || [];
+        setItems(pendingItems);
+        runChecks(pendingItems, storedPasscode);
+      })
       .catch((err) => {
         if (err.response?.status === 401) {
           sessionStorage.removeItem(sessionKey);
@@ -46,7 +93,7 @@ export default function OrgPortal({ org, orgLabel, accentColor, nextStageLabel }
         }
       })
       .finally(() => setLoading(false));
-  }, [org]);
+  }, [org, runChecks]);
 
   useEffect(() => {
     if (authed) fetchPending();
@@ -71,19 +118,36 @@ export default function OrgPortal({ org, orgLabel, accentColor, nextStageLabel }
     sessionStorage.removeItem(sessionKey);
     setAuthed(false);
     setItems([]);
+    setChecks({});
   };
 
-  const handleApprove = async (item) => {
+  const doApprove = async (item) => {
     const storedPasscode = sessionStorage.getItem(sessionKey);
     setActioningId(`${item.mediaType}:${item.mediaId}`);
     try {
       await api.approve(storedPasscode, item.mediaType, item.mediaId);
       setItems((prev) => prev.filter((i) => i.mediaId !== item.mediaId));
+      setConfirmingId(null);
     } catch (err) {
       setError(err.response?.data?.error || err.message);
     } finally {
       setActioningId(null);
     }
+  };
+
+  // The check runs automatically per item (see runChecks); a failed or
+  // still-in-flight check doesn't block Approve outright, but routes
+  // through a second "Approve Anyway" confirmation so the org can't
+  // rubber-stamp past a red flag by accident.
+  const handleApprove = (item) => {
+    const key = `${item.mediaType}:${item.mediaId}`;
+    const check = checks[key];
+    const passed = check?.status === "done" && check.result?.passed === true;
+    if (!passed) {
+      setConfirmingId(key);
+      return;
+    }
+    doApprove(item);
   };
 
   const handleReject = async (item) => {
@@ -173,6 +237,10 @@ export default function OrgPortal({ org, orgLabel, accentColor, nextStageLabel }
           const key = `${item.mediaType}:${item.mediaId}`;
           const isActing = actioningId === key;
           const isRejecting = rejectingId === key;
+          const isConfirming = confirmingId === key;
+          const checkEntry = checks[key];
+          const checkResult = checkEntry?.status === "done" ? checkEntry.result : null;
+          const isChecking = !checkEntry || checkEntry.status === "checking";
           return (
             <div key={key} className={`rounded-2xl border p-4 ${cardBg}`}>
               <div className="flex gap-3">
@@ -196,6 +264,35 @@ export default function OrgPortal({ org, orgLabel, accentColor, nextStageLabel }
                     View full details ↗
                   </a>
                 </div>
+              </div>
+
+              <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                {isChecking && (
+                  <span className={`text-[10px] font-mono px-2 py-1 rounded-full ${isDark ? "bg-neutral-800 text-neutral-400" : "bg-neutral-100 text-neutral-500"}`}>
+                    ⏳ Verifying hash + Fabric + C2PA + forensics…
+                  </span>
+                )}
+                {checkEntry?.status === "error" && (
+                  <span className={`text-[10px] font-mono px-2 py-1 rounded-full ${isDark ? "bg-red-500/10 text-red-400" : "bg-red-50 text-red-700"}`}>
+                    ⚠ Check failed: {checkEntry.error}
+                  </span>
+                )}
+                {checkResult && (
+                  <>
+                    <CheckPill label="Hash" ok={checkResult.hash?.fileIntact === true} isDark={isDark} />
+                    <CheckPill
+                      label={checkResult.fabric?.agreement ? `Fabric (${checkResult.fabric.agreement})` : "Fabric"}
+                      ok={checkResult.fabric?.valid === true}
+                      isDark={isDark}
+                    />
+                    <CheckPill label="C2PA" ok={checkResult.c2pa?.signed === true && checkResult.c2pa?.valid === true} isDark={isDark} />
+                    <CheckPill
+                      label={checkResult.forensics?.label ? `Forensics: ${checkResult.forensics.label}` : "Forensics"}
+                      ok={checkResult.forensics?.label === "Authentic"}
+                      isDark={isDark}
+                    />
+                  </>
+                )}
               </div>
 
               {isRejecting ? (
@@ -223,15 +320,39 @@ export default function OrgPortal({ org, orgLabel, accentColor, nextStageLabel }
                     </button>
                   </div>
                 </div>
+              ) : isConfirming ? (
+                <div className="mt-3 space-y-2">
+                  <div className={`rounded-lg border p-2.5 text-xs ${isDark ? "bg-amber-950/20 border-amber-800/30 text-amber-400" : "bg-amber-50 border-amber-200 text-amber-700"}`}>
+                    ⚠ {checkEntry?.status === "error"
+                      ? "The integrity check couldn't complete for this item."
+                      : "This item failed the automatic hash / Fabric / C2PA / forensics check."} Approve only if you've verified it another way.
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => doApprove(item)}
+                      disabled={isActing}
+                      className="flex-1 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold disabled:opacity-50"
+                    >
+                      {isActing ? "Approving…" : "Approve Anyway"}
+                    </button>
+                    <button
+                      onClick={() => setConfirmingId(null)}
+                      disabled={isActing}
+                      className={`flex-1 py-2 rounded-lg border text-xs font-semibold disabled:opacity-50 ${isDark ? "border-neutral-700 text-neutral-300" : "border-neutral-200 text-neutral-600"}`}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
               ) : (
                 <div className="flex gap-2 mt-3">
                   <button
                     onClick={() => handleApprove(item)}
-                    disabled={isActing}
+                    disabled={isActing || isChecking}
                     className="flex-1 py-2 rounded-lg text-white text-xs font-semibold disabled:opacity-50"
                     style={{ background: accentColor }}
                   >
-                    {isActing ? "Approving…" : `✓ Approve → ${nextStageLabel}`}
+                    {isActing ? "Approving…" : isChecking ? "Checking…" : `✓ Approve → ${nextStageLabel}`}
                   </button>
                   <button
                     onClick={() => setRejectingId(key)}

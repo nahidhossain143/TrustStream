@@ -210,6 +210,7 @@ async function registerVideoProof({
   metadataCid,
   merkleRoot,
   totalSegments,
+  metadata,
 }) {
   if (process.env.FABRIC_ENABLED !== "true") {
     return {
@@ -227,6 +228,7 @@ async function registerVideoProof({
       String(metadataCid || ""),
       String(merkleRoot || ""),
       String(totalSegments || 0),
+      metadata ? JSON.stringify(metadata) : "",
     ]);
   } catch (err) {
     invalidateFabricConnection();
@@ -241,6 +243,7 @@ async function registerImageProof({
   ipfsCid,
   metadataCid,
   c2paHash,
+  metadata,
 }) {
   if (process.env.FABRIC_ENABLED !== "true") {
     return {
@@ -259,6 +262,7 @@ async function registerImageProof({
       String(ipfsCid || ""),
       String(metadataCid || ""),
       String(c2paHash || ""),
+      metadata ? JSON.stringify(metadata) : "",
     ]);
   } catch (err) {
     invalidateFabricConnection();
@@ -266,12 +270,12 @@ async function registerImageProof({
   }
 }
 
-async function verifyVideoProof(videoId, currentMerkleRoot) {
+async function verifyVideoProof(videoId, currentMerkleRoot, orgKey = "org1") {
   if (process.env.FABRIC_ENABLED !== "true") {
     return { available: false, reason: "FABRIC_ENABLED is not true" };
   }
 
-  const { contract } = await getFabricContract();
+  const { contract } = await getFabricContract(orgKey);
 
   try {
     const result = await contract.evaluateTransaction(
@@ -281,17 +285,17 @@ async function verifyVideoProof(videoId, currentMerkleRoot) {
     );
     return { available: true, ...parseFabricResult(result) };
   } catch (err) {
-    invalidateFabricConnection();
+    invalidateFabricConnection(orgKey);
     return { available: false, reason: err.message };
   }
 }
 
-async function verifyImageProof(imageId, currentSha256Hash) {
+async function verifyImageProof(imageId, currentSha256Hash, orgKey = "org1") {
   if (process.env.FABRIC_ENABLED !== "true") {
     return { available: false, reason: "FABRIC_ENABLED is not true" };
   }
 
-  const { contract } = await getFabricContract();
+  const { contract } = await getFabricContract(orgKey);
 
   try {
     const result = await contract.evaluateTransaction(
@@ -301,7 +305,7 @@ async function verifyImageProof(imageId, currentSha256Hash) {
     );
     return { available: true, ...parseFabricResult(result) };
   } catch (err) {
-    invalidateFabricConnection();
+    invalidateFabricConnection(orgKey);
     return { available: false, reason: err.message };
   }
 }

@@ -19,13 +19,11 @@ export const videoAPI = {
   getOne: (videoId) => api.get(`/upload/videos/${videoId}`),
   getSegments: (videoId) => api.get(`/upload/videos/${videoId}/segments`),
   getC2pa: (videoId, segmentIndex) => api.get(`/upload/c2pa/${videoId}/${segmentIndex}`),
-  verify: (body) => api.post("/upload/verify", body),
   verifyFabric: (videoId) => api.post(`/upload/${videoId}/verify-fabric`),
   revoke: (videoId, reason) => api.post(`/upload/${videoId}/revoke`, { reason }),
   reportTamper: (videoId, segmentIndex) =>
     api.post("/upload/report-tamper", { videoId, segmentIndex }),
   clearDispute: (videoId) => api.post(`/upload/${videoId}/clear-dispute`),
-  getForensics: (videoId) => api.get(`/upload/videos/${videoId}/forensics`),
 
   blockchain: {
     getFabricAudit: () => api.get("/upload/blockchain/fabric-audit"),
@@ -86,6 +84,8 @@ export const createOrgPortalAPI = (org) => ({
   login: (passcode) => api.post(`/upload/${org}/login`, { passcode }),
   getPending: (passcode) =>
     api.get(`/upload/${org}/pending`, { headers: { "X-Org-Passcode": passcode } }),
+  check: (passcode, mediaType, mediaId) =>
+    api.get(`/upload/${org}/${mediaType}/${mediaId}/check`, { headers: { "X-Org-Passcode": passcode } }),
   approve: (passcode, mediaType, mediaId) =>
     api.post(`/upload/${org}/${mediaType}/${mediaId}/approve`, {}, { headers: { "X-Org-Passcode": passcode } }),
   reject: (passcode, mediaType, mediaId, reason) =>

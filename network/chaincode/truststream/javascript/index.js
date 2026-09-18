@@ -142,7 +142,25 @@ class TrustStreamContract extends Contract {
     }
   }
 
-  async RegisterVideoProof(ctx, videoId, title, metadataCid, merkleRoot, totalSegments) {
+  // `metadataJson` carries the actual metadata content (segment hashes,
+  // forensics summary, embedded C2PA manifest, etc.) directly into the
+  // ledger, instead of the caller having to pin it to a third-party IPFS
+  // service first just to get a CID to point at. `metadataCid` is kept
+  // alongside it purely for backward compatibility with proofs registered
+  // before this field existed (and as an optional external mirror going
+  // forward) - it is never required for the proof to be complete. A
+  // consortium member reading this ledger should never depend on an
+  // outside pinning service just to see what was actually registered.
+  _parseMetadataJson(metadataJson) {
+    if (!metadataJson) return null;
+    try {
+      return JSON.parse(metadataJson);
+    } catch (err) {
+      throw new Error(`metadataJson is not valid JSON: ${err.message}`);
+    }
+  }
+
+  async RegisterVideoProof(ctx, videoId, title, metadataCid, merkleRoot, totalSegments, metadataJson) {
     this._requireOrg(ctx, "Org1MSP", "register new content");
 
     const key = this._key("video", videoId);
@@ -152,6 +170,7 @@ class TrustStreamContract extends Contract {
     }
 
     const now = this._now(ctx);
+    const metadata = this._parseMetadataJson(metadataJson);
 
     // The chaincode's endorsement policy is AND(Org1MSP.peer, Org2MSP.peer, Org3MSP.peer),
     // so a peer from all 3 orgs already had to simulate and sign this exact proposal
@@ -166,6 +185,7 @@ class TrustStreamContract extends Contract {
       mediaId: videoId,
       title,
       metadataCid,
+      metadata,
       merkleRoot,
       totalSegments: Number(totalSegments || 0),
       endorsements: {
@@ -186,7 +206,7 @@ class TrustStreamContract extends Contract {
     return this._canonicalJSON(proof);
   }
 
-  async RegisterImageProof(ctx, imageId, title, sha256Hash, ipfsCid, metadataCid, c2paHash) {
+  async RegisterImageProof(ctx, imageId, title, sha256Hash, ipfsCid, metadataCid, c2paHash, metadataJson) {
     this._requireOrg(ctx, "Org1MSP", "register new content");
 
     const key = this._key("image", imageId);
@@ -196,6 +216,7 @@ class TrustStreamContract extends Contract {
     }
 
     const now = this._now(ctx);
+    const metadata = this._parseMetadataJson(metadataJson);
 
     // Same reasoning as RegisterVideoProof: the AND(3-org) endorsement policy
     // already required all 3 orgs' peers to sign this proposal before commit,
@@ -209,6 +230,7 @@ class TrustStreamContract extends Contract {
       sha256Hash,
       ipfsCid,
       metadataCid,
+      metadata,
       c2paHash,
       endorsements: {
         NewsAgency: true,
