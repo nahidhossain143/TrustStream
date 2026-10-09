@@ -43,6 +43,7 @@ export default function OrgPortal({ org, orgLabel, accentColor, nextStageLabel }
   const [checks, setChecks] = useState({});
   // Item awaiting the "Approve Anyway" confirmation because its check failed.
   const [confirmingId, setConfirmingId] = useState(null);
+  const [reportingId, setReportingId] = useState(null);
 
   const bg = isDark ? "bg-[#080808]" : "bg-neutral-100";
   const text = isDark ? "text-white" : "text-neutral-900";
@@ -148,6 +149,29 @@ export default function OrgPortal({ org, orgLabel, accentColor, nextStageLabel }
       return;
     }
     doApprove(item);
+  };
+
+  // A failed check shouldn't end in a bare "Reject" - the org files the
+  // evidence. The backend assembles the report (every signal, what failed,
+  // the ledger record at review time); this just saves it.
+  const downloadReport = async (item) => {
+    const storedPasscode = sessionStorage.getItem(sessionKey);
+    const key = `${item.mediaType}:${item.mediaId}`;
+    setReportingId(key);
+    try {
+      const res = await api.report(storedPasscode, item.mediaType, item.mediaId);
+      const blob = new Blob([JSON.stringify(res.data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `truststream-${org}-review-${item.mediaType}-${item.mediaId}.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err.response?.data?.error || err.message);
+    } finally {
+      setReportingId(null);
+    }
   };
 
   const handleReject = async (item) => {
@@ -291,6 +315,17 @@ export default function OrgPortal({ org, orgLabel, accentColor, nextStageLabel }
                       ok={checkResult.forensics?.label === "Authentic"}
                       isDark={isDark}
                     />
+                    <button
+                      onClick={() => downloadReport(item)}
+                      disabled={reportingId === key}
+                      className={`text-[10px] font-mono px-2 py-1 rounded-full border transition-colors disabled:opacity-50 ${
+                        checkResult.passed
+                          ? (isDark ? "border-neutral-700 text-neutral-400 hover:text-neutral-200" : "border-neutral-200 text-neutral-500 hover:text-neutral-700")
+                          : (isDark ? "border-amber-700/50 text-amber-400 hover:border-amber-500" : "border-amber-300 text-amber-700 hover:border-amber-500")
+                      }`}
+                    >
+                      {reportingId === key ? "…" : "⬇ Report"}
+                    </button>
                   </>
                 )}
               </div>
@@ -334,6 +369,13 @@ export default function OrgPortal({ org, orgLabel, accentColor, nextStageLabel }
                       className="flex-1 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold disabled:opacity-50"
                     >
                       {isActing ? "Approving…" : "Approve Anyway"}
+                    </button>
+                    <button
+                      onClick={() => downloadReport(item)}
+                      disabled={isActing || reportingId === key}
+                      className={`flex-1 py-2 rounded-lg border text-xs font-semibold disabled:opacity-50 ${isDark ? "border-amber-700/50 text-amber-400" : "border-amber-300 text-amber-700"}`}
+                    >
+                      {reportingId === key ? "Generating…" : "⬇ Generate report"}
                     </button>
                     <button
                       onClick={() => setConfirmingId(null)}

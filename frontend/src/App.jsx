@@ -10,6 +10,7 @@ import FabricAudit from "./pages/FabricAudit";
 import Analytics from "./pages/Analytics";
 import HowItWorks from "./pages/HowItWorks";
 import OrgPortal from "./pages/OrgPortal";
+import PublicVerify from "./pages/PublicVerify";
 import { ThemeProvider } from "./context/ThemeContext";
 
 const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -75,6 +76,7 @@ function App() {
           <Routes>
             <Route path="/" element={<Home />} />
             <Route path="/how-it-works" element={<HowItWorks />} />
+            <Route path="/verify" element={<PublicVerify />} />
             <Route path="/video/:videoId" element={<VideoDetail />} />
             <Route path="/image/:imageId" element={<ImageDetail />} />
             <Route path="/timeline/:kind/:id" element={<TimelinePage />} />
