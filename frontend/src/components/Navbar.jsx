@@ -43,6 +43,15 @@ export default function Navbar() {
           💡 How It Works
         </Link>
 
+        {/* Verify by upload - the one control on this bar an ordinary
+            reader acts on, so it gets a solid fill rather than an outline. */}
+        <Link
+          to="/verify"
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition-colors shadow-lg shadow-emerald-900/20"
+        >
+          🔍 Verify Media
+        </Link>
+
         {/* Platform analytics link */}
         <Link
           to="/analytics"

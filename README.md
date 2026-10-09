@@ -35,6 +35,7 @@
 - [Tamper Reports & Dispute Governance](#tamper-reports--dispute-governance)
 - [Sequential Approval Workflow](#sequential-approval-workflow)
 - [Pre-Approval Integrity Check](#pre-approval-integrity-check)
+- [Public Verify by Upload](#public-verify-by-upload)
 - [C2PA Implementation](#c2pa-implementation)
 - [Forensics (AI-Free)](#forensics-ai-free)
 - [Forensic Analysis Modules](#forensic-analysis-modules)
@@ -628,6 +629,9 @@ If containers are stopped for any reason, just re-run `./network.sh up createCha
 | Frontend | http://localhost:5173 (or 5174) | Terminal 2 |
 | Fabric Audit Dashboard | http://localhost:5173/fabric-audit | Browser |
 | Admin upload | http://localhost:5173/admin | Browser |
+| Public verify-by-upload | http://localhost:5173/verify | Browser |
+| Broadcaster portal | http://localhost:5173/broadcaster | Browser |
+| Auditor portal | http://localhost:5173/auditor | Browser |
 | Hyperledger Fabric | Docker containers | `docker ps` |
 | IPFS Storage | Pinata | Always live |
 | Local HLS cache (videos) | `backend/public/streams` | Local |
@@ -683,6 +687,13 @@ If containers are stopped for any reason, just re-run `./network.sh up createCha
 - Click **View Timeline** on any card, or navigate to `/timeline/video/:id` or `/timeline/image/:id`
 - Full media lifecycle rendered as a vertical timeline: upload → C2PA sign → IPFS pin → Fabric registration → tamper reports → disputed / cleared / revoked (if applicable)
 - Immutability proof footer confirms no events can be deleted from this log
+
+### Verify a File You Were Sent (anyone)
+1. Go to `http://localhost:5173/verify` (or click **🔍 Verify Media** in the navbar — no login needed)
+2. Drop in the video or image you received
+3. Optionally pick which published item it claims to be — only needed when the file carries no provenance of its own
+4. Click **Check this file**: the backend hashes the bytes, reads any embedded C2PA manifest, and compares both against the ledger
+5. The result shows all three digests (submitted master / published copy / your file), the verdict, the C2PA and Fabric signals, and the matched record — downloadable as a JSON report. See [Public Verify by Upload](#public-verify-by-upload)
 
 ### Manual Verify (Image)
 - On the image detail page, click **Verify Hash**
@@ -765,12 +776,21 @@ All require `X-Org-Passcode` header except `/login`, which takes the passcode in
 | `GET` | `/api/upload/broadcaster/pending` | Items with `status: "pending_broadcaster"`, enriched with local catalog data |
 | `GET` | `/api/upload/broadcaster/:mediaType/:mediaId/check` | Pre-approval integrity check — re-hashes the file, cross-verifies against all 3 orgs' Fabric peers independently, validates the C2PA manifest, and surfaces the upload-time forensic verdict. See [Pre-Approval Integrity Check](#pre-approval-integrity-check) |
 | `POST` | `/api/upload/broadcaster/:mediaType/:mediaId/approve` | Submits `ApproveByBroadcaster` as Org2MSP → `pending_auditor` |
+| `GET` | `/api/upload/broadcaster/:mediaType/:mediaId/report` | Filing copy of the check — verdict (`PASS`/`FAIL`), per-signal findings in plain language, the media's ledger status, channel and chaincode. Downloaded as JSON from the portal and attached to a rejection |
 | `POST` | `/api/upload/broadcaster/:mediaType/:mediaId/reject` | `{ reason }` → Submits `RejectByBroadcaster` as Org2MSP → `rejected` |
 | `POST` | `/api/upload/auditor/login` | Same shape, `AUDITOR_PORTAL_PASSCODE` |
 | `GET` | `/api/upload/auditor/pending` | Items with `status: "pending_auditor"` |
 | `GET` | `/api/upload/auditor/:mediaType/:mediaId/check` | Same integrity check as the Broadcaster's, gated by `AUDITOR_PORTAL_PASSCODE` |
 | `POST` | `/api/upload/auditor/:mediaType/:mediaId/approve` | Submits `ApproveByAuditor` as Org3MSP → `active` |
+| `GET` | `/api/upload/auditor/:mediaType/:mediaId/report` | Same report, gated by `AUDITOR_PORTAL_PASSCODE` |
 | `POST` | `/api/upload/auditor/:mediaType/:mediaId/reject` | `{ reason }` → Submits `RejectByAuditor` as Org3MSP → `rejected` |
+
+### Public Verification (no login, no passcode)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/upload/public-verify` | Multipart `file` (MP4 / JPG / PNG / WebP) + optional `claimedMediaId`. Hashes the bytes, reads any embedded C2PA manifest, and compares against both digests the ledger holds. Returns `{ verdict, explanation, hash: { uploaded, registered, registeredMaster, matches, matchesSubmittedMaster, masterDigestFrom }, c2pa, fabric, match, record, ledger }`. The uploaded file is deleted unconditionally — only its digest is ever computed. See [Public Verify by Upload](#public-verify-by-upload) |
+| `GET` | `/api/upload/public-verify/published` | Published (`active`) items, used by the verify page's "which item does this claim to be?" picker |
 
 ### Static
 
@@ -859,14 +879,16 @@ TrustStream/
 │       │   ├── TimeLinePage.jsx             # Full media lifecycle visual timeline (video + image)
 │       │   ├── FabricAudit.jsx              # Live Fabric audit dashboard (SSE)
 │       │   ├── Analytics.jsx                # Platform analytics dashboard — real charts from GET /api/upload/stats
-│       │   └── Admin.jsx                    # Tabbed upload (Video + Image), thumbnail picker, pipeline UI — gated by Clerk when VITE_REQUIRE_ADMIN_AUTH=true
+│       │   ├── Admin.jsx                    # Tabbed upload (Video + Image), thumbnail picker, pipeline UI — gated by Clerk when VITE_REQUIRE_ADMIN_AUTH=true
+│       │   ├── OrgPortal.jsx                 # Shared Broadcaster/Auditor queue — per-item 4-signal check, Approve/Reject, downloadable review report
+│       │   └── PublicVerify.jsx              # Public verify-by-upload — hashes a viewer's file and compares it with both digests on the ledger
 │       ├── components/
 │       │   ├── VideoPlayer.jsx              # hls.js + per-segment SHA-256 + tamper overlay + posterUrl
 │       │   ├── ForensicPanel.jsx            # Visualizes the 4 video forensic modules
 │       │   ├── charts/                      # Hand-written inline-SVG chart components (Bar/GroupedBar/Donut) for Analytics.jsx
-│       │   └── Navbar.jsx                   # Reader navbar (logo + theme toggle + live badge + Analytics link)
+│       │   └── Navbar.jsx                   # Reader navbar (logo + theme toggle + live badge + How It Works / Verify Media / Analytics links)
 │       ├── services/
-│       │   ├── api.js                       # videoAPI, imageAPI, feedAPI, statsAPI, syncAPI, timelineAPI
+│       │   ├── api.js                       # videoAPI, imageAPI, feedAPI, statsAPI, syncAPI, timelineAPI, verifyAPI, createOrgPortalAPI
 │       │   └── hash.js                      # Browser SHA-256 (Web Crypto API)
 │
 ├── network/
@@ -988,6 +1010,10 @@ The Broadcaster/Auditor portals originally showed nothing but a title, thumbnail
 
 Approve doesn't hard-block on a failed check — instead it routes through an **"Approve Anyway"** confirmation, so a reviewer can't rubber-stamp past a red flag by accident, but still has final judgment for edge cases (e.g. a transient IPFS gateway hiccup).
 
+### Filing a report instead of a bare rejection
+
+A failed check shouldn't end with an org clicking Reject and the reasoning evaporating. Every queue item has a **⬇ Report** button (`GET /broadcaster|auditor/:mediaType/:mediaId/report`) that downloads the review as JSON: the verdict (`PASS`/`FAIL`), each failed signal written out in plain language (*"Re-hashing the stored file produced X, but Y was registered"*), the submission's own details, and the channel/chaincode it lives on. It is also offered directly inside the "Approve Anyway" confirmation, so the reviewer can file the evidence at the exact moment they override a red flag.
+
 ### Verified end-to-end through the real API, including a real bug along the way
 
 - Registered a test image → confirmed `pending_broadcaster` both on-chain and in the local catalog.
@@ -995,6 +1021,48 @@ Approve doesn't hard-block on a failed check — instead it routes through an **
 - Wrong-org attempts (e.g. submitting `ApproveByAuditor` as Org1MSP) correctly rejected by the chaincode with a clear error.
 - Logged into the Auditor portal, approved → confirmed `active`, confirmed the item now appears in the public feed (it's excluded by default while pending, the same way a newsroom wouldn't publish an unapproved draft).
 - Along the way, hit and fixed the CouchDB key-ordering determinism bug described above, and a second real bug: the approval routes weren't writing the chain's result back into the local catalog cache, so `/feed`/`/stats` kept showing the old pending status after a successful on-chain approval - fixed by syncing every approve/reject response into the local manifest, the same pattern every other write route in this file already follows.
+
+---
+
+## Public Verify by Upload
+
+`http://localhost:5173/verify` — the audience-facing half of the tamper story, open to anyone with no login and no passcode. A reader who was sent a clip drops it in, and the consortium answers whether those exact bytes are the ones it registered. The file is hashed and then deleted unconditionally; only the digest is ever computed, and nothing is stored.
+
+### Two digests per item, both on the ledger
+
+A video's registered digest is the Merkle root over its HLS segments — something nobody holding only the MP4 can recompute. And the *published* copy is not the file the newsroom handed over: TrustStream embeds a C2PA manifest into it first, which changes its bytes (and therefore its digest) by design. So registration now records **both** digests in the chaincode's own state via `metadataJson`:
+
+| Field | What it is |
+|---|---|
+| `originalSha256` | The file exactly as the newsroom submitted it, before anything was embedded |
+| `sourceSha256` | The published copy, carrying the embedded C2PA manifest — what IPFS serves |
+
+Both are replicated across all 3 orgs' peers, so recognising a submitter's own master is backed by the ledger rather than by this server's local catalog (the response's `masterDigestFrom` field says which of the two actually answered).
+
+### How a file is tied to a record
+
+Evidence from the file always outranks a claim made in the UI:
+
+1. **The file's own C2PA manifest** — its `truststream.consortium` assertion names the media id. Strongest: the file itself says what it is.
+2. **A digest match** — the bytes hash to a record's `originalSha256` or `sourceSha256`.
+3. **The viewer's claim** — an optional "which published item does this claim to be?" picker, for the case where an editor re-saved the file hard enough to strip the manifest. The list is filtered to the same media type as the uploaded file, and if the file's own digest matches some *other* record, that match is reported instead, with a note saying why the claim was set aside.
+
+### Verdicts
+
+| Verdict | Meaning |
+|---|---|
+| ✅ **Authentic** | The digest matches the published copy and the embedded manifest still verifies against these bytes |
+| ✅ **Same file** | Identical to the file the newsroom submitted — the pre-publication master. Genuine, just not the published asset (which differs only by the embedded manifest) |
+| 🚨 **Tampered** | The file carries TrustStream provenance naming this item, but its digest differs from the ledger's — the content was altered after publication |
+| 🚨 **Not this item** | Not the published item it was compared against, and carrying no provenance of its own: either an unrelated file, or one edited hard enough to strip the manifest |
+| ⛔ **Revoked** / ⚠️ **Disputed** / ⏳ **Not yet approved** | The bytes match a registered item whose ledger status disqualifies it |
+| ❌ **No provenance** | No manifest, and the digest matches nothing on the ledger — never published through TrustStream |
+
+The page shows all three digests side by side (submitted master, published copy, and the one just computed from the viewer's file), colouring whichever line matches, and the whole result can be downloaded as a JSON report.
+
+### Verified end-to-end
+
+Tested against the live 3-org network with real files, not fixtures: an untouched published copy returned `authentic`; the submitter's own master returned `pre_publication_master` with `masterDigestFrom: "ledger"`; a copy with **one byte flipped** returned `tampered` with `validation_state: Invalid` — the C2PA manifest survived the edit and named its own record, so no claim was needed to catch it; a fully re-encoded copy (brightness changed, manifest stripped) returned `claim_mismatch`; and random unregistered bytes returned `unregistered`. Cross-checked with macOS's own `shasum -a 256`, which produces the identical digest — the comparison is reproducible without trusting this codebase.
 
 ---
 
@@ -1258,7 +1326,7 @@ Profiling why single-worker latency was so much higher than 5/10-worker latency 
 | **Video original MP4** | ❌ Temp | ❌ | ❌ | Deleted after FFmpeg |
 | **Video HLS segments** | ✅ `public/streams/` | ✅ Pinned | *(covered by Merkle root)* | Local copy serves live playback (see note below); IPFS copy is independently verifiable and playable via the "🌐 Direct from IPFS" toggle on the video detail page |
 | **Video .c2pa sidecars** | ✅ Next to segments | *(in metadata JSON)* | — | Allows offline verification |
-| **Video metadata JSON** | — | ⚠ Best-effort mirror | ✅ Full content (`proof.metadata`, chaincode v3.2+) | The ledger copy is authoritative — a failed/blocked IPFS pin no longer blocks registration or loses the metadata, it just costs the convenience gateway URL |
+| **Video metadata JSON** | — | ⚠ Best-effort mirror | ✅ Full content (`proof.metadata`, chaincode v3.2+) | The ledger copy is authoritative — a failed/blocked IPFS pin no longer blocks registration or loses the metadata, it just costs the convenience gateway URL. Carries both file digests (`originalSha256`, `sourceSha256`) as of v15 |
 | **Video forensic report** | — | ✅ Pinned | *(summary embedded in `proof.metadata`)* | — |
 | **Video thumbnail** | ✅ `public/thumbnails/` | — | — | Poster image, not part of provenance |
 | **Image bytes** | ❌ Deleted after pin | ✅ Pinned | *(hash anchored)* | IPFS-only |
@@ -1316,6 +1384,15 @@ The thesis core promise is **"uploaded content cannot be deleted."** This is enf
 ---
 
 ## What's New
+
+### v15 — Public Verify by Upload, File Digests On-Chain, Reviewer Reports (September 2026)
+
+* **New public `/verify` page (navbar: 🔍 Verify Media):** anyone can drop in a video or image they were sent and have the consortium answer whether those exact bytes are the ones it registered — no login, no passcode. The file is hashed and then deleted unconditionally; only the digest is ever computed. See [Public Verify by Upload](#public-verify-by-upload). (A verify-by-upload page existed briefly in v9 and was removed in v12; this is a different feature — it compares against the ledger's own digests and reads the file's embedded C2PA manifest, rather than just re-checking a stored value.)
+* **Both file digests are now registered on-chain:** `metadataJson` carries `originalSha256` (the file as the newsroom submitted it) alongside `sourceSha256` (the published copy, after the C2PA manifest is embedded into it). This closed a real gap found while testing: a submitter verifying their own master could previously only be checked against this server's local catalog — a cache, not evidence. The verify response reports which source actually answered (`masterDigestFrom: "ledger" | "local catalog"`).
+* **Verdicts distinguish four genuinely different situations** rather than collapsing them into "doesn't match": an untouched published copy (`authentic`), the submitter's pre-publication master (`pre_publication_master`), a file carrying TrustStream provenance whose bytes no longer match it (`tampered`), and a file with no provenance that simply isn't the item it was compared against (`claim_mismatch`). The last distinction matters: calling an unrelated file "tampered" asserts something the system cannot actually prove.
+* **Evidence from the file outranks the viewer's claim:** matching goes C2PA manifest → digest → dropdown choice. If the file's own digest matches a *different* record than the one picked, that match is reported instead, with a note explaining why. Picking an item of the wrong media type (an image while verifying a video) is now impossible in the UI and explained rather than silently ignored in the API.
+* **Downloadable reviewer reports in the approval portals:** every queue item has a **⬇ Report** button (`GET /broadcaster|auditor/:mediaType/:mediaId/report`) producing the verdict, each failed signal written out in plain language, and the ledger record as it stood at review time — so a rejection can be filed with its evidence instead of just a reason string. Also offered inside the "Approve Anyway" confirmation.
+* **Verified against the live 3-org network with real files:** a one-byte-flipped copy of a published video came back `tampered` with the embedded manifest reporting `validation_state: Invalid`; a fully re-encoded copy (manifest stripped) came back `claim_mismatch`; the untouched master came back `pre_publication_master` sourced from the ledger; random bytes came back `unregistered`. Digests cross-checked against macOS's own `shasum -a 256`.
 
 ### v14 — Pre-Approval Integrity Check, Metadata Moved On-Chain, Dead Code Cleanup (September 2026)
 

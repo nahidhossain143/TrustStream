@@ -313,6 +313,13 @@ const buildMetadataPayload = (manifest) => ({
   title: manifest.title,
   description: manifest.description,
   createdAt: manifest.createdAt,
+  // Both digests go on-chain (chaincode v3.2+ stores this payload in the
+  // ledger's own state): the file as the submitter handed it over, and the
+  // published copy TrustStream embedded its C2PA manifest into. Without the
+  // first one, a submitter verifying their own master could only be checked
+  // against this server's local catalog - which is a cache, not evidence.
+  originalSha256: manifest.originalSha256 || null,
+  sourceSha256: manifest.sourceSha256 || null,
   totalSegments: manifest.totalSegments,
   playlistUrl: manifest.playlistUrl,
   segments: manifest.segments.map((segment) => ({
@@ -1042,8 +1049,15 @@ router.post("/", uploadLimiter, videoUpload, async (req, res) => {
     // by the background pipeline as the video's "source of record".
     let sourceC2paResult = { ok: false, error: "not attempted" };
     let sourceC2paPath = null;
+    let originalSha256 = null;
     try {
       const videoBuffer = fs.readFileSync(inputPath);
+      // Digest of the submitter's own file, before anything is embedded into
+      // it. The published copy is the C2PA-embedded one (sourceSha256), so
+      // without this the uploader verifying their own master would be told
+      // it doesn't match - true, but useless. Recorded so /public-verify can
+      // recognise a pre-publication master for what it is.
+      originalSha256 = crypto.createHash("sha256").update(videoBuffer).digest("hex");
       sourceC2paResult = await embedVideoManifest({ videoId, videoBuffer, title, description, createdAt });
       if (sourceC2paResult.ok) {
         sourceC2paPath = path.join(outputFolder, "source.c2pa.mp4");
@@ -1072,6 +1086,15 @@ router.post("/", uploadLimiter, videoUpload, async (req, res) => {
       fabricCompletedAt: null,
       c2paStatus: "pending",
       sourceC2paPath,
+      // Digest of the *embedded* source MP4 - the exact bytes pinned to
+      // IPFS and handed to viewers. The ledger's own digest for a video is
+      // the Merkle root over its HLS segments, which nobody holding just
+      // the MP4 can recompute, so this is what /public-verify compares a
+      // re-uploaded file against.
+      originalSha256,
+      sourceSha256: sourceC2paResult.ok
+        ? crypto.createHash("sha256").update(sourceC2paResult.signedBuffer).digest("hex")
+        : null,
       sourceC2paStatus: sourceC2paResult.ok ? "signed" : "failed",
       sourceC2paManifestHash: sourceC2paResult.manifestHash || null,
       sourceC2paInstanceId: sourceC2paResult.instanceId || null,
@@ -1643,6 +1666,307 @@ router.post("/images/:imageId/clear-dispute", async (req, res) => {
 });
 
 // =================================================================
+//  PUBLIC VERIFY BY UPLOAD
+//
+//  The audience-facing half of the tamper story. Anyone - no login, no
+//  passcode - can drop a file here and ask the consortium whether these
+//  exact bytes are the ones that were registered.
+//
+//  Why this can't be faked: a re-encoded, re-cut or pixel-edited copy of
+//  a TrustStream asset still carries the embedded C2PA manifest (editors
+//  don't know to strip it), but the manifest's hash binding no longer
+//  matches the bytes around it, and the file's sha256 no longer matches
+//  what the ledger recorded. Both checks fail independently, and neither
+//  can be repaired without the consortium's private signing key.
+//
+//  claimedMediaId is for the case where an editor DID strip the manifest:
+//  the viewer names which published item the file claims to be, and the
+//  answer becomes a direct digest comparison against that record.
+// =================================================================
+
+const publicVerifyLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 40,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many verification requests - try again later." },
+});
+
+const publicVerifyUpload = multer({
+  dest: uploadsDir,
+  limits: { fileSize: 500 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const allowed = ["image/jpeg", "image/jpg", "image/png", "image/webp", "video/mp4", "video/quicktime"];
+    if (allowed.includes(file.mimetype)) return cb(null, true);
+    cb(new Error("Only JPG, PNG, WebP images or MP4 video can be verified"));
+  },
+}).single("file");
+
+// A video's registered digest is the Merkle root over its HLS segments,
+// which someone holding only the MP4 can never recompute - so the
+// comparable digest is the sha256 of the C2PA-embedded source MP4 that was
+// pinned to IPFS. Uploads made before that field existed get it computed
+// once from the pinned copy and cached back into the manifest.
+const resolveSourceSha256 = async (manifest) => {
+  if (manifest.sourceSha256) return manifest.sourceSha256;
+  if (!manifest.sourceIpfsCid) return null;
+  const buffer = await fetchBufferFromIPFS(manifest.sourceIpfsCid);
+  if (!buffer) return null;
+  const digest = crypto.createHash("sha256").update(buffer).digest("hex");
+  updateManifest(manifest.videoId, (current) => ({ ...current, sourceSha256: digest }));
+  return digest;
+};
+
+const mediaIdFromC2pa = (result) => {
+  const assertion = result?.manifest?.assertions?.find((a) => a.label === "truststream.consortium");
+  const id = assertion?.data?.asset_reference?.media_id;
+  return typeof id === "string" && UUID_RE.test(id) ? id : null;
+};
+
+router.post("/public-verify", publicVerifyLimiter, publicVerifyUpload, async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+  const tempPath = req.file.path;
+
+  try {
+    const buffer = fs.readFileSync(tempPath);
+    const uploadedHash = crypto.createHash("sha256").update(buffer).digest("hex");
+    const kind = req.file.mimetype.startsWith("video") ? "video" : "image";
+
+    // Read whatever provenance the file itself carries. `valid` here is a
+    // real cryptographic result: signature + cert chain + hash binding
+    // against these exact bytes, not a lookup of something we stored.
+    const embedded = await verifyEmbeddedAsset(buffer, req.file.mimetype);
+    const c2pa = {
+      present: embedded.exists === true,
+      valid: embedded.valid === true,
+      validationState: embedded.validation_state || null,
+      signer: embedded.signer || null,
+      instanceId: embedded.instance_id || null,
+      error: embedded.error || null,
+    };
+
+    // Identify which published item this file claims to be: the manifest's
+    // own asset_reference first, then the viewer's claim, then a pure
+    // digest lookup (an untouched original matches here even with no
+    // manifest at all).
+    const claimedMediaId = typeof req.body?.claimedMediaId === "string" && UUID_RE.test(req.body.claimedMediaId)
+      ? req.body.claimedMediaId
+      : null;
+
+    // How the record was matched decides how strong a claim the verdict can
+    // make. The file naming itself ("manifest") or hashing to a record
+    // ("digest") is evidence about THIS file; the viewer picking an item
+    // from a dropdown ("claim") is only a question being asked, so a
+    // mismatch there means "this isn't that item" - not necessarily "this
+    // is an edited copy of it".
+    const manifestMediaId = mediaIdFromC2pa(embedded);
+    let matchSource = null;
+    let claimIgnored = null;
+
+    // Look a claimed id up in BOTH catalogs, not just the one matching the
+    // uploaded file's type: someone verifying a video can pick an image
+    // from the list by mistake, and silently finding nothing would make the
+    // claim vanish without explanation.
+    const lookupAnyKind = (id) => {
+      const video = readManifest(id);
+      if (video) return { manifest: video, kind: "video" };
+      const image = readImageManifest(id);
+      if (image) return { manifest: image, kind: "image" };
+      return null;
+    };
+
+    let mediaId = manifestMediaId || claimedMediaId;
+    let found = mediaId ? lookupAnyKind(mediaId) : null;
+
+    // A video file can never be the same bytes as an image record, so
+    // comparing them answers nothing - say that rather than pretending.
+    if (found && found.kind !== kind) {
+      claimIgnored = `You compared ${kind === "video" ? "a video" : "an image"} against ${found.kind === "video" ? "a video" : "an image"} record ("${found.manifest.title}") - the two can never have the same digest.`;
+      found = null;
+      mediaId = null;
+    }
+
+    let manifest = found?.manifest || null;
+    if (manifest) matchSource = manifestMediaId ? "manifest" : "claim";
+
+    // What the bytes themselves match, independent of anything claimed.
+    const digestMatch = kind === "image"
+      ? listImageManifests().find((m) => m.sha256Hash === uploadedHash) || null
+      : listManifests().find(
+          (m) => m.kind === "video" && (m.sourceSha256 === uploadedHash || m.originalSha256 === uploadedHash)
+        ) || null;
+    const digestMatchId = digestMatch ? digestMatch.imageId || digestMatch.videoId : null;
+
+    // Evidence from the file always beats a guess made in the dropdown: if
+    // these bytes are on the ledger under some other record, reporting "not
+    // the item you picked" and stopping there would hide the more useful
+    // fact that the file is registered at all.
+    if (digestMatch && digestMatchId !== mediaId) {
+      if (manifest) {
+        claimIgnored = `These bytes are on the ledger under a different record ("${digestMatch.title}"), which is stronger evidence than the item you picked - that match is what is shown below.`;
+      }
+      manifest = digestMatch;
+      mediaId = digestMatchId;
+      matchSource = "digest";
+    } else if (!manifest && digestMatch) {
+      manifest = digestMatch;
+      mediaId = digestMatchId;
+      matchSource = "digest";
+    }
+
+    let registeredHash = null;
+    let ledger = null;
+    let fabric = { checked: false };
+
+    if (manifest) {
+      registeredHash = kind === "image" ? manifest.sha256Hash : await resolveSourceSha256(manifest);
+
+      const proof = await queryLedger("GetMediaProof", [kind, mediaId]);
+      ledger = proof.available ? proof.results : null;
+
+      // For images the chaincode holds the file digest itself, so the
+      // viewer's bytes can be checked against all three orgs' peers
+      // directly - the same 3/3 cross-check the approval portals run.
+      if (kind === "image") {
+        try {
+          const [org1, org2, org3] = await Promise.all([
+            verifyImageProof(mediaId, uploadedHash, "org1"),
+            verifyImageProof(mediaId, uploadedHash, "org2"),
+            verifyImageProof(mediaId, uploadedHash, "org3"),
+          ]);
+          const orgs = { NewsAgency: org1, Broadcaster: org2, Auditor: org3 };
+          const agreeing = Object.values(orgs).filter((r) => r.available && r.hashMatches === true).length;
+          fabric = { checked: true, agreement: `${agreeing}/3`, hashMatches: agreeing === 3, orgs };
+        } catch (err) {
+          fabric = { checked: true, error: err.message };
+        }
+      }
+    }
+
+    const hashMatches = Boolean(registeredHash) && registeredHash === uploadedHash;
+    // The published copy is the one TrustStream embedded a C2PA manifest
+    // into, so its digest differs from the file the submitter originally
+    // handed over. Telling an uploader their own master "doesn't match" is
+    // technically true and completely useless - recognise it instead.
+    const masterDigest = ledger?.metadata?.originalSha256 || manifest?.originalSha256 || null;
+    const matchesMaster = Boolean(masterDigest) && masterDigest === uploadedHash;
+    // If the bytes themselves line up with the record, the match is no
+    // longer just the viewer's guess - say so, rather than telling them
+    // "nothing in the file points to this" while showing them a digest
+    // that does.
+    if (matchSource === "claim" && (hashMatches || matchesMaster)) matchSource = "digest";
+
+    const status = ledger?.status || manifest?.fabricResult?.status || null;
+
+    let verdict;
+    if (!manifest && !c2pa.present) {
+      verdict = "unregistered";
+    } else if (!manifest) {
+      verdict = "unknown_record";
+    } else if (matchesMaster && !hashMatches) {
+      // Checked before the "nothing to compare against" case: recognising
+      // the submitter's own master is useful even when the published copy
+      // never made it to IPFS.
+      verdict = "pre_publication_master";
+    } else if (!registeredHash) {
+      verdict = "not_comparable";
+    } else if (matchSource === "claim" && !hashMatches && !c2pa.present) {
+      // Nothing about the file itself points at this record - only the
+      // viewer's own comparison does. All that can honestly be said is
+      // that it isn't the published item.
+      verdict = "claim_mismatch";
+    } else if (!hashMatches || (c2pa.present && !c2pa.valid)) {
+      verdict = "tampered";
+    } else if (status === "revoked") {
+      verdict = "revoked";
+    } else if (status === "disputed") {
+      verdict = "disputed";
+    } else if (status && status !== "active") {
+      verdict = "pending";
+    } else {
+      verdict = "authentic";
+    }
+
+    const EXPLANATIONS = {
+      authentic: "These exact bytes are the ones the consortium registered. The digest matches the ledger record and the embedded C2PA manifest still verifies against this file.",
+      tampered: "This file does NOT match what was registered. It carries TrustStream provenance naming this item, but its digest differs from the one on the ledger - so the content has been altered since it was published, even if it looks identical.",
+      pre_publication_master: "These are the original bytes that were submitted to TrustStream, before the consortium embedded its provenance manifest into them. The published copy carries that manifest, so the two digests differ by design - this file is genuine, but it is the submitter\'s master, not the published asset.",
+      claim_mismatch: "These bytes are not the published item you compared them against. The file carries no TrustStream provenance of its own, so it is either an unrelated file, or a copy that was edited and re-saved hard enough to strip the manifest. Either way, it is not what the consortium published.",
+      revoked: "The bytes match a registered item, but the consortium has since revoked it. Do not treat it as published.",
+      disputed: "The bytes match a registered item that two organizations have flagged as possibly tampered. It is currently under dispute.",
+      pending: "The bytes match a submission that has not finished the Broadcaster and Auditor approval workflow, so it is not published content yet.",
+      unknown_record: "This file carries a TrustStream provenance manifest, but this server has no record of the item it names.",
+      not_comparable: "A record exists, but no registered digest is available to compare against on this server.",
+      unregistered: "No provenance found. This file carries no TrustStream manifest and its digest matches nothing on the ledger - it was never published through TrustStream.",
+    };
+
+    res.json({
+      verdict,
+      explanation: EXPLANATIONS[verdict],
+      uploadedFile: {
+        name: req.file.originalname,
+        sizeBytes: req.file.size,
+        mimeType: req.file.mimetype,
+        kind,
+      },
+      hash: {
+        uploaded: uploadedHash,
+        registered: registeredHash,
+        // The digest of the file as the newsroom submitted it, shown
+        // alongside the published one so a viewer can see exactly which of
+        // the two their copy is - or that it is neither.
+        registeredMaster: masterDigest,
+        matches: hashMatches,
+        // Only set when the file turns out to be the pre-embed master, so
+        // the page can show why two genuine files disagree.
+        matchesSubmittedMaster: matchesMaster,
+        // Whether that comparison came from the ledger itself or only from
+        // this server's local catalog - the difference matters to anyone
+        // deciding how much the answer is worth.
+        masterDigestFrom: matchesMaster ? (ledger?.metadata?.originalSha256 ? "ledger" : "local catalog") : null,
+      },
+      c2pa,
+      fabric,
+      match: { source: matchSource, claimIgnored },
+      record: manifest
+        ? {
+            mediaId,
+            kind,
+            title: manifest.title || null,
+            createdAt: manifest.createdAt || null,
+            registeredBy: ledger?.createdBy || "Org1MSP",
+            status,
+            detailUrl: kind === "image" ? `/image/${mediaId}` : `/video/${mediaId}`,
+          }
+        : null,
+      ledger,
+      checkedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    // Verification never keeps the viewer's file - it only ever needed the
+    // digest.
+    fs.promises.unlink(tempPath).catch(() => {});
+  }
+});
+
+// Lightweight list of published items, so the verify page can offer "which
+// published item does this file claim to be?" for files whose C2PA manifest
+// an editor stripped.
+router.get("/public-verify/published", (req, res) => {
+  const items = [
+    ...listManifests()
+      .filter((m) => m.kind === "video" && m.fabricResult?.status === "active")
+      .map((m) => ({ mediaId: m.videoId, kind: "video", title: m.title, createdAt: m.createdAt })),
+    ...listImageManifests()
+      .filter((m) => m.fabricResult?.status === "active")
+      .map((m) => ({ mediaId: m.imageId, kind: "image", title: m.title, createdAt: m.createdAt })),
+  ].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  res.json({ items });
+});
+
+// =================================================================
 //  ORG APPROVAL PORTALS (Broadcaster, Auditor)
 //
 //  Sequential workflow enforced by the chaincode itself (see
@@ -1838,6 +2162,71 @@ const runIntegrityCheck = async (mediaType, mediaId) => {
   };
 };
 
+// When the pre-approval check fails, an org shouldn't just silently
+// reject - it needs something it can file, attach to a rejection, or hand
+// to the other org. This assembles exactly that: every signal, which ones
+// failed and why, and the ledger record as it stood at review time.
+const buildReviewReport = async (reviewer, mediaType, mediaId) => {
+  const check = await runIntegrityCheck(mediaType, mediaId);
+  if (check.error) return check;
+
+  const manifest = mediaType === "image" ? readImageManifest(mediaId) : readManifest(mediaId);
+
+  const findings = [];
+  if (check.hash.fileIntact !== true) {
+    findings.push({
+      signal: "Hash",
+      detail: check.hash.error
+        || `Re-hashing the stored file produced ${check.hash.current}, but ${check.hash.registered} was registered - the content has changed since registration.`,
+    });
+  }
+  if (check.fabric.valid !== true) {
+    findings.push({
+      signal: "Fabric",
+      detail: check.fabric.error
+        || `Only ${check.fabric.agreement} organizations' peers confirm this record. Disagreeing: ${(check.fabric.disagreeingOrgs || []).join(", ") || "unknown"}.`,
+    });
+  }
+  if (check.c2pa.signed !== true || check.c2pa.valid !== true) {
+    findings.push({
+      signal: "C2PA",
+      detail: check.c2pa.error
+        || (check.c2pa.signed ? "The embedded manifest did not verify against the current bytes." : "No C2PA manifest is attached to this media."),
+    });
+  }
+  if (check.forensics.label !== "Authentic") {
+    findings.push({
+      signal: "Forensics",
+      detail: check.forensics.checked
+        ? `Upload-time forensic verdict was "${check.forensics.label}" (risk score ${check.forensics.riskScore}).`
+        : "Forensic analysis has not completed for this item.",
+    });
+  }
+
+  return {
+    reportId: crypto.randomUUID(),
+    generatedAt: new Date().toISOString(),
+    reviewer,
+    verdict: check.passed ? "PASS" : "FAIL",
+    recommendation: check.passed
+      ? "All four signals passed. Safe to forward to the next stage of the approval workflow."
+      : "One or more signals failed. Reject, or approve only after verifying the item by other means - the findings below should accompany that decision.",
+    media: {
+      mediaType,
+      mediaId,
+      title: manifest?.title || null,
+      description: manifest?.description || null,
+      submittedAt: manifest?.createdAt || null,
+      submittedBy: manifest?.fabricResult?.createdBy || "Org1MSP",
+      ledgerStatus: manifest?.fabricResult?.status || null,
+      channel: process.env.FABRIC_CHANNEL_NAME || "mychannel",
+      chaincode: process.env.FABRIC_CHAINCODE_NAME || "truststreamcc",
+    },
+    checks: check,
+    findings,
+  };
+};
+
 router.post("/broadcaster/login", portalLimiter, (req, res) => {
   if (req.body?.passcode !== process.env.BROADCASTER_PORTAL_PASSCODE) {
     return res.status(401).json({ error: "Invalid passcode" });
@@ -1855,6 +2244,12 @@ router.get("/broadcaster/:mediaType/:mediaId/check", portalDataLimiter, requireO
   const result = await runIntegrityCheck(req.params.mediaType, req.params.mediaId);
   if (result.error) return res.status(404).json(result);
   res.json(result);
+});
+
+router.get("/broadcaster/:mediaType/:mediaId/report", portalDataLimiter, requireOrgPasscode("BROADCASTER_PORTAL_PASSCODE"), async (req, res) => {
+  const report = await buildReviewReport("Broadcaster", req.params.mediaType, req.params.mediaId);
+  if (report.error) return res.status(404).json(report);
+  res.json(report);
 });
 
 // The chain itself is always the source of truth (confirmed by the
@@ -1908,6 +2303,12 @@ router.get("/auditor/:mediaType/:mediaId/check", portalDataLimiter, requireOrgPa
   const result = await runIntegrityCheck(req.params.mediaType, req.params.mediaId);
   if (result.error) return res.status(404).json(result);
   res.json(result);
+});
+
+router.get("/auditor/:mediaType/:mediaId/report", portalDataLimiter, requireOrgPasscode("AUDITOR_PORTAL_PASSCODE"), async (req, res) => {
+  const report = await buildReviewReport("Auditor", req.params.mediaType, req.params.mediaId);
+  if (report.error) return res.status(404).json(report);
+  res.json(report);
 });
 
 router.post("/auditor/:mediaType/:mediaId/approve", portalLimiter, requireOrgPasscode("AUDITOR_PORTAL_PASSCODE"), async (req, res) => {

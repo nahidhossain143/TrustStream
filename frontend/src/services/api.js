@@ -90,4 +90,19 @@ export const createOrgPortalAPI = (org) => ({
     api.post(`/upload/${org}/${mediaType}/${mediaId}/approve`, {}, { headers: { "X-Org-Passcode": passcode } }),
   reject: (passcode, mediaType, mediaId, reason) =>
     api.post(`/upload/${org}/${mediaType}/${mediaId}/reject`, { reason }, { headers: { "X-Org-Passcode": passcode } }),
+  // Filing copy of a failed check - what the reviewing org attaches to a
+  // rejection instead of just saying "no".
+  report: (passcode, mediaType, mediaId) =>
+    api.get(`/upload/${org}/${mediaType}/${mediaId}/report`, { headers: { "X-Org-Passcode": passcode } }),
 });
+
+// ─── Public Verify-by-Upload API ──────────────────────────────────
+// Open to anyone: hand it a file, get back whether those exact bytes are
+// what the consortium registered.
+export const verifyAPI = {
+  verifyFile: (formData) =>
+    api.post("/upload/public-verify", formData, {
+      headers: { "Content-Type": "multipart/form-data" },
+    }),
+  getPublished: () => api.get("/upload/public-verify/published"),
+};
