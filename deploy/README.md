@@ -46,7 +46,7 @@ Let's Encrypt needs a hostname, not a bare IP. Sign in at [duckdns.org](https://
 ssh -i <private-key> ubuntu@<public-ip>
 
 git clone https://github.com/nahidhossain143/TrustStream.git ~/TrustStream
-# (add  -b dev  while deploy/ hasn't been merged into main yet)
+# (add  -b deploy-free-tier  until that branch is merged into main)
 
 ~/TrustStream/deploy/vm/1-install-prereqs.sh   # firewall, Docker, Node 22, FFmpeg, Caddy
 exit                                           # log out once so the docker group applies
