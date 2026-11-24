@@ -10,7 +10,7 @@ const { startFabricEventListener } = require("./services/fabric.service");
 
 const app = express();
 
-// Render (and most PaaS hosts) sit behind a reverse proxy - without this,
+// Behind a reverse proxy (Caddy/nginx or a PaaS host) - without this,
 // express-rate-limit and req.ip both see the proxy's IP for every request
 // instead of the real client, which breaks per-client rate limiting.
 app.set("trust proxy", 1);
@@ -41,24 +41,24 @@ app.use(cors({
 }));
 app.use(express.json());
 
-// --- Render Storage Setup ---
-// Render-এর হার্ডড্রাইভ থেকে যেন ভিডিওগুলো প্লে হয়
+// --- Storage ---
+// HLS segments and thumbnails are served from STORAGE_PATH (defaults to backend/).
 const storageRoot = process.env.STORAGE_PATH || path.join(__dirname, "../");
 const streamsDir = path.join(storageRoot, "public/streams");
 const thumbnailsDir = path.join(storageRoot, "public/thumbnails");
-// ----------------------------
+// ---------------
 
-// Serve local HLS stream files from the persistent disk
+// Serve local HLS stream files from disk
 app.use("/streams", express.static(streamsDir));
 // Serve uploaded video thumbnails (poster images shown before playback)
 app.use("/thumbnails", express.static(thumbnailsDir));
 
-// Root Health Check (Render এ Cannot GET / এরর ঠিক করার জন্য)
+// Root route so a bare GET / answers instead of "Cannot GET /"
 app.get("/", (req, res) => {
   res.status(200).json({
     status: "online",
     service: "TrustStream API",
-    message: "Backend is running securely on Render."
+    message: "Backend is running."
   });
 });
 

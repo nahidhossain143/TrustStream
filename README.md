@@ -843,7 +843,7 @@ could walk the catalog directory's path upward via `../` segments and cause the 
 - **`helmet`** — standard security headers (`X-Content-Type-Options`, `X-Frame-Options`, HSTS, etc). Content-Security-Policy is deliberately disabled (this is a JSON API + static file server, not an HTML-rendering app) and `Cross-Origin-Resource-Policy` is relaxed to `cross-origin` so the frontend — a different origin — can still load `/streams` and `/thumbnails` assets directly.
 - **CORS locked to a known origin** — `origin: '*'` (wide open) replaced with an allowlist read from `FRONTEND_ORIGIN` (comma-separated for multiple deployed origins), falling back to `*` only for local dev convenience, with a startup warning so it can't be silently forgotten before a real deployment.
 - **Input validation** — title/description length caps (200 / 5000 chars) on both upload routes, rejecting empty titles, so a single malformed request can't bloat the catalog or the C2PA `CreativeWork` assertion embedded in every asset.
-- **`trust proxy`** — set for Render/most PaaS hosts, so rate limiting and any IP-based logic see the real client IP instead of the reverse proxy's.
+- **`trust proxy`** — set for deployments behind a reverse proxy or PaaS host, so rate limiting and any IP-based logic see the real client IP instead of the reverse proxy's.
 - **Centralized JSON error handling** — a global Express error-handling middleware replaces the framework's default HTML stack-trace page with a clean JSON `{ error }` response, and classifies Multer errors (bad file type, size limit exceeded) as `400`s rather than generic `500`s.
 
 ---

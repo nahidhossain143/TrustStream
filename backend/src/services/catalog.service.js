@@ -17,7 +17,7 @@ const fs = require("fs");
 const path = require("path");
 
 // --- Storage location --------------------------------------------
-// STORAGE_PATH env wins (used on Render/persistent disk),
+// STORAGE_PATH env wins (e.g. a persistent disk mount),
 // otherwise sibling of backend/ (i.e., backend/data/catalog).
 const storageRoot = process.env.STORAGE_PATH || path.join(__dirname, "../../");
 const catalogDir = path.join(storageRoot, "data/catalog");
