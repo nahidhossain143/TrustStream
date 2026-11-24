@@ -178,8 +178,6 @@ router.param("kind", (req, res, next, value) => {
 // --- Multer Configs ----------------------------------------------
 // Video uploads: accepts both `video` (mp4) and optional `thumbnail` (image)
 // using multer .fields() to handle two named file inputs in one request.
-const upload = multer({ dest: uploadsDir });
-
 const videoUpload = multer({
   dest: uploadsDir,
   limits: { fileSize: 500 * 1024 * 1024 },

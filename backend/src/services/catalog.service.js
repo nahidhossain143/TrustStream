@@ -114,45 +114,9 @@ const listManifests = (options = {}) => {
   );
 };
 
-/**
- * Convenience: count manifests by kind.
- * Useful for dashboards / admin home stats.
- */
-const countByKind = () => {
-  const all = listManifests();
-  return {
-    total: all.length,
-    videos: all.filter((m) => m.kind === "video").length,
-    images: all.filter((m) => m.kind === "image").length,
-  };
-};
-
-/**
- * Delete the on-disk manifest file for an id.
- *
- * IMPORTANT: This is a *local catalog* hygiene operation only. It does
- * NOT delete blockchain records, IPFS pins, or C2PA sidecars. The
- * blockchain record is permanent (immutability requirement).
- *
- * Used internally for cleanup/sync. Do NOT expose this through any HTTP
- * route or admin UI - that would violate the "uploaded content cannot
- * be deleted" guarantee.
- */
-const removeManifest = (id) => {
-  try {
-    fs.unlinkSync(getManifestPath(id));
-    return true;
-  } catch (err) {
-    return false;
-  }
-};
-
 module.exports = {
   writeManifest,
   readManifest,
   updateManifest,
   listManifests,
-  countByKind,
-  // Internal/admin only - intentionally not for public deletion paths.
-  removeManifest,
 };

@@ -860,7 +860,6 @@ TrustStream/
 │   │   │   ├── catalog.service.js           # Local manifest read/write/list (kind: video|image)
 │   │   │   ├── c2pa.service.js              # C2PA v2.2: real embedded manifests (image + source MP4) via @contentauth/c2pa-node, ES256-signed JSON sidecar per video segment
 │   │   │   ├── ipfs.service.js              # Pinata upload (image, source MP4, segment, JSON), gateway, fetch (JSON + raw buffer)
-│   │   │   ├── merkle.service.js            # Merkle tree build/proof/verify over segment hashes (video registration root)
 │   │   │   ├── timeline.service.js          # Revocation timeline built from GetMediaHistory
 │   │   │   ├── forensics.service.js         # All 4 video forensic modules (compression, temporal, AV sync, score fusion) in one file
 │   │   │   └── image-forensics.service.js   # Image forensics (JPEG quant + EXIF)
