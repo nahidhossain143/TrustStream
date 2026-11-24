@@ -12,7 +12,6 @@ export default function DonutChart({ data, size = 160, isDark, centerLabel }) {
   const circumference = 2 * Math.PI * innerRadius;
   const gapDeg = total > 0 ? 2 : 0; // visual gap between segments
 
-  const surfaceColor = isDark ? "#1a1a19" : "#fcfcfb";
   const textColor = isDark ? "#ffffff" : "#0b0b0b";
   const mutedColor = "#898781";
 
