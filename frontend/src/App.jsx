@@ -4,7 +4,7 @@ import { ClerkProvider, SignedIn, SignedOut, RedirectToSignIn, useClerk, useSess
 import Home from "./pages/Home";
 import Admin from "./pages/Admin";
 import VideoDetail from "./pages/VideoDetail";
-import ImageDetail from "./pages/ImageDetail";
+import ImageDetail from "./pages/Imagedetail";
 import TimelinePage from "./pages/TimeLinePage";
 import FabricAudit from "./pages/FabricAudit";
 import Analytics from "./pages/Analytics";

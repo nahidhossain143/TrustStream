@@ -2590,7 +2590,14 @@ const revokeMedia = async ({ kind, id, reason }) => {
   return { revoked: true, kind, id, revokedAt, fabric };
 };
 
-router.post("/:videoId/revoke", async (req, res) => {
+// Revocation is permanent - the chaincode has no way back from "revoked" -
+// and media IDs are public (they're in every feed response), so an open
+// endpoint would let anyone on the internet kill any item with one curl.
+// Gated behind the Auditor's passcode, the same x-org-passcode header the
+// Auditor portal already sends; portalLimiter bounds passcode guessing.
+const requireRevokeAuth = [portalLimiter, requireOrgPasscode("AUDITOR_PORTAL_PASSCODE")];
+
+router.post("/:videoId/revoke", requireRevokeAuth, async (req, res) => {
   try {
     const result = await revokeMedia({
       kind: "video",
@@ -2608,7 +2615,7 @@ router.post("/:videoId/revoke", async (req, res) => {
   }
 });
 
-router.post("/images/:imageId/revoke", async (req, res) => {
+router.post("/images/:imageId/revoke", requireRevokeAuth, async (req, res) => {
   try {
     const result = await revokeMedia({
       kind: "image",

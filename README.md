@@ -26,6 +26,7 @@
 - [How to Run — Windows](#how-to-run--windows)
 - [How to Run — macOS](#how-to-run--macos)
 - [Daily Startup](#daily-startup-both-platforms)
+- [Deployment (Free Tier)](#deployment-free-tier)
 - [How to Use](#how-to-use)
 - [API Reference](#api-reference)
 - [Security & Hardening](#security--hardening)
@@ -640,6 +641,19 @@ If containers are stopped for any reason, just re-run `./network.sh up createCha
 
 ---
 
+## Deployment (Free Tier)
+
+The whole system can run online for free. The frontend goes on **Vercel**. The backend and the full 3-org Fabric network go on one **Oracle Cloud Always Free** Ampere VM (4 OCPU / 24 GB), with **Caddy** providing automatic HTTPS on a free **DuckDNS** hostname. Four scripts in [`deploy/vm/`](deploy/vm/) set up the VM:
+
+1. Firewall and packages
+2. Fabric network and chaincode, including the Org3 approval
+3. Backend as a systemd service
+4. HTTPS
+
+See **[deploy/README.md](deploy/README.md)** for the step-by-step guide.
+
+---
+
 ## How to Use
 
 ### Upload a Video (Admin)
@@ -753,8 +767,8 @@ If containers are stopped for any reason, just re-run `./network.sh up createCha
 | `GET` | `/api/upload/feed` | Mixed video + image feed (newest-first), server-side search + filter + pagination — drives the FB-style home page. Query params: `search` (title/description substring), `mediaType` (`all`\|`video`\|`image`), `status` (`all`\|`verified`\|`disputed`\|`revoked`), `page`, `limit` (max 50). Returns `{ total, page, totalPages, hasMore, counts, feed }` |
 | `GET` | `/api/upload/stats` | Platform-wide aggregates for the [Analytics Dashboard](#analytics-dashboard) — verdict breakdown, risk-score histogram, per-day upload counts, Fabric status breakdown, all computed live from the catalog |
 | `POST` | `/api/upload/sync-from-blockchain` | Restore both videos AND images from the Fabric ledger + IPFS |
-| `POST` | `/api/upload/:videoId/revoke` | Revoke a video (status flip, chaincode `RevokeMedia`) |
-| `POST` | `/api/upload/images/:imageId/revoke` | Revoke an image |
+| `POST` | `/api/upload/:videoId/revoke` | Revoke a video (status flip, chaincode `RevokeMedia`). Requires the Auditor passcode in the `x-org-passcode` header, because revocation is permanent |
+| `POST` | `/api/upload/images/:imageId/revoke` | Revoke an image (same Auditor passcode requirement) |
 | `GET` | `/api/upload/blockchain/revocation-timeline` | **Full media lifecycle timeline** — query params: `id` (mediaId) + `kind` (`video` or `image`) |
 
 ### Hyperledger Fabric
