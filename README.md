@@ -26,7 +26,6 @@
 - [How to Run — Windows](#how-to-run--windows)
 - [How to Run — macOS](#how-to-run--macos)
 - [Daily Startup](#daily-startup-both-platforms)
-- [Deployment (Free Tier)](#deployment-free-tier)
 - [How to Use](#how-to-use)
 - [API Reference](#api-reference)
 - [Security & Hardening](#security--hardening)
@@ -128,7 +127,7 @@ The Admin page uses a tab switcher to separate Video Upload from Image Upload, e
 
 The Video Upload form also accepts an optional **thumbnail image**, which becomes the `<video poster>` shown before HLS playback.
 
-All components are fully theme-aware (dark + light), `api.js` provides complete coverage for all flows (`videoAPI`, `imageAPI`, `feedAPI`, `syncAPI`, `timelineAPI`), and `App.jsx` includes `/image/:imageId`, `/timeline/:kind/:id`, and `/fabric-audit` routes alongside the existing video route.
+All components are fully theme-aware (dark + light), `api.js` provides complete coverage for all flows (`videoAPI`, `imageAPI`, `feedAPI`, `timelineAPI`), and `App.jsx` includes `/image/:imageId`, `/timeline/:kind/:id`, and `/fabric-audit` routes alongside the existing video route.
 
 ### Net Result
 
@@ -640,19 +639,6 @@ If containers are stopped for any reason, just re-run `./network.sh up createCha
 
 ---
 
-## Deployment (Free Tier)
-
-The whole system can run online for free. The frontend goes on **Vercel**. The backend and the full 3-org Fabric network go on one **Oracle Cloud Always Free** Ampere VM (4 OCPU / 24 GB), with **Caddy** providing automatic HTTPS on a free **DuckDNS** hostname. Four scripts in [`deploy/vm/`](deploy/vm/) set up the VM:
-
-1. Firewall and packages
-2. Fabric network and chaincode, including the Org3 approval
-3. Backend as a systemd service
-4. HTTPS
-
-See **[deploy/README.md](deploy/README.md)** for the step-by-step guide.
-
----
-
 ## How to Use
 
 ### Upload a Video (Admin)
@@ -900,7 +886,7 @@ TrustStream/
 │       │   ├── charts/                      # Hand-written inline-SVG chart components (Bar/GroupedBar/Donut) for Analytics.jsx
 │       │   └── Navbar.jsx                   # Reader navbar (logo + theme toggle + live badge + How It Works / Verify Media / Analytics links)
 │       ├── services/
-│       │   ├── api.js                       # videoAPI, imageAPI, feedAPI, statsAPI, syncAPI, timelineAPI, verifyAPI, createOrgPortalAPI
+│       │   ├── api.js                       # videoAPI, imageAPI, feedAPI, statsAPI, timelineAPI, verifyAPI, createOrgPortalAPI
 │       │   └── hash.js                      # Browser SHA-256 (Web Crypto API)
 │
 ├── network/
