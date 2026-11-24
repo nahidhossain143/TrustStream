@@ -552,7 +552,6 @@ VITE_REQUIRE_ADMIN_AUTH=false
 ```bash
 cd backend  && npm install && cd ..
 cd frontend && npm install && cd ..
-cd network  && npm install && cd ..
 ```
 
 ### Step 12 — Run
