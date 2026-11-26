@@ -1,6 +1,7 @@
 'use strict';
 
 const { WorkloadModuleBase } = require('@hyperledger/caliper-core');
+const { videoMetadata } = require('./metadata');
 
 // Measures RegisterVideoProof throughput + end-to-end latency. Every
 // submission needs unanimous endorsement from all 3 orgs' peers (the
@@ -26,6 +27,7 @@ class RegisterVideoProofWorkload extends WorkloadModuleBase {
         `bafkbenchvideometa${this.workerIndex}${this.txIndex}`,
         `benchmerkleroot${this.workerIndex}${this.txIndex}`,
         '3',
+        videoMetadata(videoId, 3),
       ],
       timeout: 30,
     };

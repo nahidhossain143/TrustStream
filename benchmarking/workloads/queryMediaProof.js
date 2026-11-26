@@ -5,7 +5,7 @@ const { WorkloadModuleBase } = require('@hyperledger/caliper-core');
 // Read-path throughput/latency: GetMediaProof is evaluate-only (no
 // endorsement/ordering/commit involved), so this isolates query performance
 // from the write path measured by the register* workloads.
-const QUERY_TARGET_ID = 'caliper-query-target';
+const { QUERY_TARGET_ID } = require('./metadata');
 
 class QueryMediaProofWorkload extends WorkloadModuleBase {
   async submitTransaction() {

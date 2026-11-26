@@ -1,6 +1,7 @@
 'use strict';
 
 const { WorkloadModuleBase } = require('@hyperledger/caliper-core');
+const { imageMetadata } = require('./metadata');
 
 // Same measurement as registerVideoProof.js, on the lighter RegisterImageProof
 // call -- used at multiple worker counts (see benchmarks/config.yaml) to show
@@ -25,6 +26,7 @@ class RegisterImageProofWorkload extends WorkloadModuleBase {
         `bafkbenchimagecid${this.workerIndex}${this.txIndex}`,
         `bafkbenchimagemeta${this.workerIndex}${this.txIndex}`,
         `benchc2pahash${this.workerIndex}${this.txIndex}`,
+        imageMetadata(imageId, `benchsha256${this.workerIndex}${this.txIndex}`, `bafkbenchimagecid${this.workerIndex}${this.txIndex}`),
       ],
       timeout: 30,
     };

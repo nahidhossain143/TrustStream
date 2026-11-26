@@ -1,12 +1,12 @@
 'use strict';
 
 const { WorkloadModuleBase } = require('@hyperledger/caliper-core');
+const { imageMetadata, QUERY_TARGET_ID } = require('./metadata');
 
 // Registers exactly one fixed-ID image proof so the query round below has a
 // known, stable target to read repeatedly. Must run as its own round with
 // txNumber: 1 and workers.number: 1 -- RegisterImageProof rejects a second
-// call with the same ID.
-const QUERY_TARGET_ID = 'caliper-query-target';
+// call with the same ID, so the ID is unique per run (see metadata.js).
 
 class SeedQueryTargetWorkload extends WorkloadModuleBase {
   async submitTransaction() {
@@ -20,6 +20,7 @@ class SeedQueryTargetWorkload extends WorkloadModuleBase {
         'bafkseedimagecid',
         'bafkseedimagemeta',
         'seedc2pahash',
+        imageMetadata(QUERY_TARGET_ID, 'seedsha256hash', 'bafkseedimagecid'),
       ],
       timeout: 30,
     };
