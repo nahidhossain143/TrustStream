@@ -63,6 +63,8 @@ const {
   getEventStreamStatus,
 } = require("../services/fabric.service");
 
+const { runIndependentAudit } = require("../services/audit.service");
+
 const {
   uploadSegmentToIPFS,
   uploadMetadataToIPFS,
@@ -2160,6 +2162,14 @@ const runIntegrityCheck = async (mediaType, mediaId) => {
   };
 };
 
+// The Auditor's extra, role-specific review on top of runIntegrityCheck -
+// see audit.service.js for what it covers and why only the Auditor runs it.
+const auditMedia = async (mediaType, mediaId) => {
+  const manifest = mediaType === "image" ? readImageManifest(mediaId) : readManifest(mediaId);
+  if (!manifest) return { error: `${mediaType === "image" ? "Image" : "Video"} not found` };
+  return runIndependentAudit({ mediaType, mediaId, manifest, buildMerkleRoot: buildMerkleRootFromSegments });
+};
+
 // When the pre-approval check fails, an org shouldn't just silently
 // reject - it needs something it can file, attach to a rejection, or hand
 // to the other org. This assembles exactly that: every signal, which ones
@@ -2201,14 +2211,20 @@ const buildReviewReport = async (reviewer, mediaType, mediaId) => {
     });
   }
 
+  const audit = reviewer === "Auditor" ? await auditMedia(mediaType, mediaId) : null;
+  for (const item of audit?.checks || []) {
+    if (item.ok !== true) findings.push({ signal: item.label, detail: item.detail });
+  }
+  const passed = check.passed && (!audit || audit.passed);
+
   return {
     reportId: crypto.randomUUID(),
     generatedAt: new Date().toISOString(),
     reviewer,
-    verdict: check.passed ? "PASS" : "FAIL",
-    recommendation: check.passed
-      ? "All four signals passed. Safe to forward to the next stage of the approval workflow."
-      : "One or more signals failed. Reject, or approve only after verifying the item by other means - the findings below should accompany that decision.",
+    verdict: passed ? "PASS" : "FAIL",
+    recommendation: passed
+      ? "All checks passed. Safe to forward to the next stage of the approval workflow."
+      : "One or more checks failed or could not be completed. Reject, or approve only after verifying the item by other means - the findings below should accompany that decision.",
     media: {
       mediaType,
       mediaId,
@@ -2221,6 +2237,7 @@ const buildReviewReport = async (reviewer, mediaType, mediaId) => {
       chaincode: process.env.FABRIC_CHAINCODE_NAME || "truststreamcc",
     },
     checks: check,
+    ...(audit && { independentAudit: audit }),
     findings,
   };
 };
@@ -2307,6 +2324,16 @@ router.get("/auditor/:mediaType/:mediaId/report", portalDataLimiter, requireOrgP
   const report = await buildReviewReport("Auditor", req.params.mediaType, req.params.mediaId);
   if (report.error) return res.status(404).json(report);
   res.json(report);
+});
+
+router.get("/auditor/:mediaType/:mediaId/audit", portalDataLimiter, requireOrgPasscode("AUDITOR_PORTAL_PASSCODE"), async (req, res) => {
+  try {
+    const audit = await auditMedia(req.params.mediaType, req.params.mediaId);
+    if (audit.error) return res.status(404).json(audit);
+    res.json(audit);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 router.post("/auditor/:mediaType/:mediaId/approve", portalLimiter, requireOrgPasscode("AUDITOR_PORTAL_PASSCODE"), async (req, res) => {

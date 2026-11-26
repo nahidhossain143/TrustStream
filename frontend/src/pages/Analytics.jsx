@@ -23,10 +23,10 @@ const seriesColors = (isDark) => ({
 // Real Hyperledger Caliper benchmark results (see README § Performance
 // Benchmarking) - a completed, static measurement, not live-fetched.
 const CALIPER_ROUNDS = [
-  { round: "Video\n1 worker", throughput: 3.0, avgLatencyS: 4.67 },
-  { round: "Image\n1 worker", throughput: 4.8, avgLatencyS: 1.20 },
-  { round: "Image\n5 workers", throughput: 14.5, avgLatencyS: 0.52 },
-  { round: "Image\n10 workers", throughput: 23.0, avgLatencyS: 0.46 },
+  { round: "Video\n1 worker", throughput: 5.0, avgLatencyS: 1.23 },
+  { round: "Image\n1 worker", throughput: 5.0, avgLatencyS: 1.09 },
+  { round: "Image\n5 workers", throughput: 14.7, avgLatencyS: 0.48 },
+  { round: "Image\n10 workers", throughput: 24.4, avgLatencyS: 0.37 },
   { round: "Query\n5 workers", throughput: 25.2, avgLatencyS: 0.02 },
 ];
 

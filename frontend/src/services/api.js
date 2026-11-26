@@ -79,6 +79,9 @@ export const createOrgPortalAPI = (org) => ({
   // rejection instead of just saying "no".
   report: (passcode, mediaType, mediaId) =>
     api.get(`/upload/${org}/${mediaType}/${mediaId}/report`, { headers: { "X-Org-Passcode": passcode } }),
+  // Auditor only - the backend has no such route for the Broadcaster.
+  audit: (passcode, mediaType, mediaId) =>
+    api.get(`/upload/${org}/${mediaType}/${mediaId}/audit`, { headers: { "X-Org-Passcode": passcode } }),
 });
 
 // ─── Public Verify-by-Upload API ──────────────────────────────────

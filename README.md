@@ -35,6 +35,7 @@
 - [Tamper Reports & Dispute Governance](#tamper-reports--dispute-governance)
 - [Sequential Approval Workflow](#sequential-approval-workflow)
 - [Pre-Approval Integrity Check](#pre-approval-integrity-check)
+- [Auditor Independent Audit](#auditor-independent-audit)
 - [Public Verify by Upload](#public-verify-by-upload)
 - [C2PA Implementation](#c2pa-implementation)
 - [Forensics (AI-Free)](#forensics-ai-free)
@@ -46,6 +47,7 @@
 - [IPFS Info](#ipfs-info)
 - [Storage Summary](#storage-summary)
 - [Immutability Guarantees](#immutability-guarantees)
+- [Testing & Known Limitations](#testing--known-limitations)
 - [Troubleshooting](#troubleshooting)
 - [What's New](#whats-new)
 
@@ -86,19 +88,21 @@ All services handle both the video and image flow:
 - `ipfs.service.js` — DRY refactor with `uploadImageToIPFS`, `uploadImageMetadataToIPFS`, and `uploadVideoSourceToIPFS` for the C2PA-embedded source MP4
 - `catalog.service.js` — flat JSON manifest store with a `kind: "video" | "image"` discriminator
 - `timeline.service.js` — rebuilds a chronological audit trail per media item by diffing consecutive versions from `GetMediaHistory`, merged with local C2PA/IPFS pipeline events
-- `image-forensics.service.js` — AI-free image risk scoring via JPEG quantization table parsing + EXIF metadata analysis
+- `image-forensics.service.js` — AI-free image risk scoring via JPEG quantization table parsing, EXIF metadata analysis and Error Level Analysis
+- `audit.service.js` — the Auditor's Independent Audit (see [Auditor Independent Audit](#auditor-independent-audit))
 
 ### Image Upload Pipeline
 
 `POST /api/upload/image` exposes the complete pipeline:
 
 ```
-multer (temp uploads/) → SHA-256 → image forensics → C2PA (in-memory) →
-  IPFS pin (image bytes) → IPFS pin (C2PA sidecar JSON) → IPFS pin (metadata JSON) →
+multer (temp uploads/) → SHA-256 → image forensics → response sent →
+  [background] C2PA manifest embedded into the image bytes (in memory) →
+  IPFS pin (C2PA-embedded image bytes) → IPFS pin (metadata JSON, best-effort mirror) →
   Fabric RegisterImageProof (unanimous 3-org endorsement) → unconditional temp-file cleanup
 ```
 
-The flow is **fully IPFS-only** — image bytes and the C2PA sidecar both live as content-addressed IPFS pins. The temporary local file is unconditionally deleted after the pipeline completes. The local catalog stores only manifest metadata (sha256, CIDs, status), which is reproducible from the Fabric ledger at any time via `POST /api/upload/sync-from-blockchain`.
+The flow is **fully IPFS-only** — the image bytes, with the C2PA manifest embedded inside them, live as one content-addressed IPFS pin; there is no separate sidecar. The temporary local file is unconditionally deleted after the pipeline completes. The local catalog stores only manifest metadata (sha256, CIDs, status), which is reproducible from the Fabric ledger at any time via `POST /api/upload/sync-from-blockchain`.
 
 ### Unified Feed + Cross-Kind Sync
 
@@ -123,7 +127,7 @@ The `VideoDetail.jsx` page renders metadata, the Fabric Proof card (status, chan
 
 The Admin page uses a tab switcher to separate Video Upload from Image Upload, each rendering an animated step-by-step pipeline visualization:
 - **Image:** 5 steps — Upload → Hash → C2PA → IPFS → Fabric
-- **Video:** 6 steps — Upload → FFmpeg → Hash → Forensic → C2PA → IPFS → Fabric
+- **Video:** 7 steps — Upload → FFmpeg → Hash → Forensic → C2PA → IPFS → Fabric
 
 The Video Upload form also accepts an optional **thumbnail image**, which becomes the `<video poster>` shown before HLS playback.
 
@@ -136,8 +140,7 @@ All components are fully theme-aware (dark + light), `api.js` provides complete 
 - **Revocation Timeline Visual** — full media lifecycle viewable as an interactive vertical timeline, built entirely from Fabric's own version history
 - **Tamper reporting + Auditor-only dispute clearance** governance built directly into the chaincode
 - **Immutability preserved at all four layers** (see [Immutability Guarantees](#immutability-guarantees) below)
-- Full end-to-end test passed: image upload → forensic → C2PA → IPFS → Fabric registration → tamper report → dispute → Auditor clear → sync recovery
-- **Demo ready.**
+- End-to-end tested on 2026-11-26 against the live network: upload → forensics → C2PA → IPFS → Fabric registration → Broadcaster → Auditor approval → verification → revocation → sync recovery. Tamper-report → dispute → clear works at the chaincode level but **not yet through the app** — see [Testing & Known Limitations](#testing--known-limitations)
 
 ---
 
@@ -148,7 +151,7 @@ All components are fully theme-aware (dark + light), `api.js` provides complete 
 | G1 | Lack of empirical validation for news processing workloads | Benchmarkable pipeline with FFmpeg, manifest indexing, IPFS, Fabric proof, and forensic risk scoring |
 | G2 | Centralized trust models incompatible with multi-org consortia | 3-org unanimous endorsement (NewsAgency, Broadcaster, Auditor) on a permissioned Hyperledger Fabric channel, shared by video and image flows |
 | G3 | Verification latency as media volume increases | Browser-side hashing, background sync, parallel batch IPFS, cached HLS playback, per-segment hash-on-load verification |
-| G4 | Centralized image storage in news platforms | IPFS-only image flow — image bytes AND the C2PA sidecar both live as pinned content; no local copy after pipeline completes |
+| G4 | Centralized image storage in news platforms | IPFS-only image flow — the image bytes, with the C2PA manifest embedded in them, live as pinned content; no local copy after pipeline completes |
 | G5 | Reliance on AI / ML deepfake detectors that hallucinate | AI-free forensic module — JPEG quantization tables + EXIF for images, temporal + AV-sync analysis for video, all deterministic |
 | G6 | Public blockchains carry cost, latency, and governance mismatched to a closed news consortium | A permissioned Fabric channel gives the consortium unanimous-endorsement guarantees with no gas cost and sub-second finality |
 
@@ -161,7 +164,7 @@ All components are fully theme-aware (dark + light), `api.js` provides complete 
 │                              TrustStream                              │
 ├───────────────┬──────────────────────────┬────────────────────────────┤
 │   Frontend    │         Backend          │      Decentralized Layers  │
-│  React 19     │   Node.js + Express 5    │  Hyperledger Fabric 2.5.16 │
+│  React 19     │   Node.js + Express 5    │  Hyperledger Fabric 2.5    │
 │  Tailwind 3   │   FFmpeg + SHA-256       │  IPFS via Pinata           │
 │  hls.js       │   Local manifest catalog │  truststreamcc chaincode   │
 │  React Router │   C2PA service           │  3-Org Consortium (AND-3)  │
@@ -181,7 +184,8 @@ All components are fully theme-aware (dark + light), `api.js` provides complete 
 ### Video Upload Flow (HLS + local cache + IPFS + ledger)
 
 ```text
-Admin uploads MP4 + (optional) thumbnail image (Clerk authenticated)
+Admin uploads MP4 + (optional) thumbnail image (Admin page; Clerk sign-in
+  when VITE_REQUIRE_ADMIN_AUTH=true - the upload API itself has no auth)
   → Thumbnail saved to /public/thumbnails/<videoId>.<ext> (served via /thumbnails/*)
   → FFmpeg segments MP4 into ~2s .ts chunks (target length is
     HLS_SEGMENT_SECONDS; forced keyframes make the cuts land close to
@@ -191,9 +195,9 @@ Admin uploads MP4 + (optional) thumbnail image (Clerk authenticated)
   → Chain hash: SHA-256(currentHash + prevHash)
   → Merkle root computed over all segment hashes
   → AI-free video forensics (compression, temporal, AV sync, motion)
+  → Embed real ES256-signed C2PA manifest into the source MP4 (JUMBF)
   → Write local manifest JSON in backend/data/catalog
   → Response sent immediately (video playable right away)
-  → Embed real ES256-signed C2PA manifest into the source MP4 (JUMBF)
   → [Background]:
        → Generate C2PA sidecar JSON per segment (6 assertions, ES256 signed —
          .ts isn't C2PA-embeddable, so this stays a custom signed sidecar)
@@ -224,7 +228,7 @@ Two implementation details make this correct rather than approximate:
 ### Image Upload Flow (IPFS-ONLY, zero local persistence)
 
 ```text
-Admin uploads JPG / PNG / WebP (Clerk authenticated)
+Admin uploads JPG / PNG / WebP (Admin page; same Clerk note as video)
   → Multer saves to public/uploads/ TEMP DIR ONLY
   → SHA-256 hash directly from temp file
   → AI-free image forensics
@@ -265,7 +269,8 @@ Video (during HLS playback - automatic, per segment):
     → [If tampered]:
          → Pause video, show red overlay
          → POST /api/upload/report-tamper → chaincode ReportTamper()
-         → 2 distinct (non-uploader) orgs → chaincode auto-flips status to disputed
+           (currently submitted with the NewsAgency/Org1 identity, which the
+           chaincode does not count - see Testing & Known Limitations)
 
 Video / Image "Check Authenticity" (manual, on detail pages):
   Backend re-hashes the local content (video: recomputes the Merkle root
@@ -298,7 +303,8 @@ User clicks "View Timeline" on any media card
     dispute cleared, revoked
   → Merged with local catalog events (upload accepted, C2PA signed, IPFS pinned)
   → Events sorted chronologically (oldest → newest)
-  → Response: { mediaId, kind, status, title, events[] }
+  → Response: { kind, id, title, source, events[] }
+    (Broadcaster/Auditor approval steps are not yet emitted as timeline events)
   → Frontend renders TimeLinePage.jsx:
        → Vertical timeline — each event is a color-coded card
        → Event types: local, c2pa, ipfs, register, tamper, disputed, cleared, revoked
@@ -322,11 +328,12 @@ User clicks "View Timeline" on any media card
 | Hashing | SHA-256 (Node.js crypto + Web Crypto API) + Chain Hash + Merkle root |
 | Provenance Standard | C2PA v2.2 via `@contentauth/c2pa-node` (real embedded manifests for images + source MP4, ES256/X.509; custom ES256-signed sidecar for video segments) |
 | Decentralized Storage | IPFS via Pinata (segments + C2PA-embedded image + C2PA-embedded source MP4 + metadata JSON) |
-| Forensics | AI-free — JPEG quantization, EXIF, temporal coherence, AV sync |
-| Permissioned Ledger | Hyperledger Fabric 2.5.16, `truststreamcc` chaincode (JavaScript) |
+| Forensics | AI-free — JPEG quantization, EXIF, Error Level Analysis, compression, temporal coherence (SSIM), AV sync |
+| Permissioned Ledger | Hyperledger Fabric 2.5 (tested deployment runs peer v2.5.15), `truststreamcc` chaincode v3.2 (JavaScript) |
 | Fabric SDK | `@hyperledger/fabric-gateway`, `@grpc/grpc-js`, `@hyperledger/fabric-protos` |
-| Fabric State DB | CouchDB (enables rich queries) |
-| Fabric Consensus | Raft (etcdraft) |
+| Fabric State DB | CouchDB 3.4 (enables rich queries) |
+| Fabric Consensus | Raft (etcdraft), single orderer |
+| Load testing | Hyperledger Caliper 0.7.1 |
 | Streaming | HLS (HTTP Live Streaming) |
 
 ---
@@ -593,18 +600,22 @@ macOS needs no WSL; Docker Desktop and the terminal are enough. Follow the same 
 - Use plain Linux-style `~/fabric-project/...` paths for `FABRIC_*_PATH` in `backend/.env` (no UNC paths needed)
 - Install Node/FFmpeg/jq via Homebrew instead of `apt-get`: `brew install node ffmpeg jq`
 
-### Adding the second peer per organization (optional but recommended)
+### One peer per organization
 
-The stock test-network gives each org one peer. For fault tolerance, `fabric-samples/test-network` includes a `start-truststream-network.sh`-style helper pattern that registers `peer1` identities, starts the containers, joins them to the channel, and installs the chaincode on both peers per org — see the Fabric docs for `addOrg3.sh`'s peer-count options if you want this.
+The tested deployment runs one peer per org (`peer0.org1`, `peer0.org2`, `peer0.org3`), each with its own CouchDB. Adding a second peer per org for fault tolerance is possible with standard Fabric tooling but is not part of this setup.
 
 ---
 
 ## Daily Startup (Both Platforms)
 
-The Fabric containers are configured with `restart: unless-stopped`, so **starting Docker Desktop brings all containers back automatically.**
+The Fabric containers are **not** set to restart automatically (restart policy `no`). After Docker Desktop starts, start the stopped containers again — the ledger data is kept:
+
+```bash
+docker start $(docker ps -aq --filter name=example.com --filter name=couchdb --filter name=ca_)
+```
 
 ```text
-1. Open Docker Desktop, wait until it reports "running"
+1. Open Docker Desktop, wait until it reports "running", then run the `docker start` command above
 2. Terminal 1:  cd <repo>/backend  && node src/server.js
 3. Terminal 2:  cd <repo>/frontend && npm run dev
 4. Open http://localhost:5173
@@ -616,9 +627,9 @@ Confirm Fabric is healthy:
 docker ps --format "{{.Names}}" | grep -c -E "peer|orderer|couch|ca_"
 ```
 
-Expected: **14** (6 peers + 1 orderer + 4 CAs + 6 CouchDB — plus 3 chaincode containers spun up after the first `deployCC`, for 17 total once chaincode has run at least once).
+Expected: **14** — 3 peers + 1 orderer + 4 CAs + 3 CouchDB = 11 network containers, plus 3 chaincode containers (`dev-peer0.orgN…truststreamcc_3.2…`) once the chaincode has run at least once.
 
-If containers are stopped for any reason, just re-run `./network.sh up createChannel -c mychannel -ca -s couchdb` from `fabric-samples/test-network` — the chaincode stays committed on the channel and does not need to be redeployed unless you change it.
+If containers are stopped, start them with the `docker start` command above — the chaincode stays committed on the channel and does not need to be redeployed unless you change it.
 
 ### Running Services Checklist
 
@@ -649,7 +660,7 @@ If containers are stopped for any reason, just re-run `./network.sh up createCha
 5. Drag & drop or pick an MP4 file
 6. (Optional) Add a thumbnail image — this becomes the video's poster shown before playback
 7. Click **Upload & Generate Hashes**
-8. Pipeline panel updates in real time (6 steps): Upload → FFmpeg → Hash → Forensics → C2PA → IPFS → Fabric
+8. Pipeline panel updates in real time (7 steps): Upload → FFmpeg → Hash → Forensics → C2PA → IPFS → Fabric
 
 ### Upload an Image (Admin)
 1. Same admin page, switch to the **Image Upload** tab
@@ -666,7 +677,8 @@ If containers are stopped for any reason, just re-run `./network.sh up createCha
 3. The queue lists every item currently waiting on that org: thumbnail, title, description, media type, upload time
 4. **Approve** moves a video/image to the next stage (`pending_broadcaster` → `pending_auditor` on the Broadcaster portal, `pending_auditor` → `active` on the Auditor portal) — each call is submitted to the chaincode under that org's own Fabric identity (`Org2MSP`/`Org3MSP`), not a shared or spoofable role
 5. **Reject** (with an optional reason) ends the workflow at `rejected` — it never reaches the other org or the public feed
-6. Only after the Auditor approves does the item become `active`: verifiable via `VerifyVideoProof`/`VerifyImageProof`, and visible on the public feed
+6. On the Auditor portal each item also shows the **Independent Audit** (IPFS re-download, Broadcaster approval trail, metadata, resubmission) — see [Auditor Independent Audit](#auditor-independent-audit)
+7. Only after the Auditor approves does the item become `active`: verifiable via `VerifyVideoProof`/`VerifyImageProof`, and visible on the public feed
 
 ### Browse the Feed (Home)
 1. Go to `http://localhost:5173`
@@ -700,9 +712,9 @@ If containers are stopped for any reason, just re-run `./network.sh up createCha
 - Use **Check Authenticity** for a Fabric ledger cross-check (re-fetches from IPFS, re-hashes, calls `VerifyImageProof`)
 
 ### Report Tamper & Clear Dispute
-- Any org can call **Report Tamper** on a video or image detail page
-- The chaincode excludes the registering org's own report from the count; once **2 distinct other orgs** have reported, status flips to **Disputed**
-- Only the **Auditor** can clear a dispute back to **Active** via the **Clear Dispute (Auditor only)** button — the prior tamper reports remain visible in the ledger history, they're just not erased
+- The detail pages have **Report Tamper** and **Clear Dispute (Auditor only)** buttons, and the video player reports a segment hash mismatch automatically
+- The chaincode rules: the registering org's own report is not counted; once **2 distinct other orgs** have reported, status flips to **Disputed**; only the **Auditor** (`Org3MSP`) can clear it back to **Active**, and prior reports stay in the ledger history
+- **Current limitation:** the backend submits both buttons with the NewsAgency (Org1) identity, so through the app a report is never counted and a clear is always refused. The rules above were verified by submitting with each org's own identity directly — see [Testing & Known Limitations](#testing--known-limitations)
 
 ### Restore from Blockchain
 - Hit `POST /api/upload/sync-from-blockchain` (API only — no button wired into the UI currently)
@@ -723,13 +735,13 @@ If containers are stopped for any reason, just re-run `./network.sh up createCha
 | `GET` | `/api/upload/videos/:videoId/segments` | Per-segment hashes, CIDs, C2PA data |
 | `GET` | `/api/upload/videos/:videoId/forensics` | Forensic report for one video |
 | `GET` | `/api/upload/ipfs/:videoId/:segmentIndex` | Per-segment IPFS details |
-| `GET` | `/api/upload/ipfs-playlist/:videoId` | IPFS-backed M3U8 playlist |
+| `GET` | `/api/upload/ipfs-playlist/:videoId` | IPFS-backed M3U8 playlist (currently returned on a single line — see Known Limitations) |
 | `GET` | `/api/upload/c2pa/:videoId/:segmentIndex` | ES256 signature verification for one segment's `.c2pa` sidecar |
 | `GET` | `/api/upload/:videoId/source-c2pa` | Real C2PA validation of the embedded source-MP4 manifest — fetches the actual bytes from IPFS and re-verifies signature + cert-chain trust + hash-binding |
 | `POST` | `/api/upload/verify` | Local hash check for one segment (browser-computed vs stored) |
 | `POST` | `/api/upload/:videoId/verify-fabric` | Re-hash + check against the Fabric ledger (Merkle root) |
-| `POST` | `/api/upload/report-tamper` | Report a video as possibly tampered (chaincode `ReportTamper`) |
-| `POST` | `/api/upload/:videoId/clear-dispute` | Auditor-only: clear a Disputed video back to Active |
+| `POST` | `/api/upload/report-tamper` | Report a video as possibly tampered (chaincode `ReportTamper`, submitted as Org1) |
+| `POST` | `/api/upload/:videoId/clear-dispute` | Clear a Disputed video (chaincode `ClearDispute`; no passcode, submitted as Org1, so the chaincode refuses it — see Known Limitations) |
 
 ### Image
 
@@ -742,8 +754,8 @@ If containers are stopped for any reason, just re-run `./network.sh up createCha
 | `GET` | `/api/upload/images/:imageId/c2pa` | Real C2PA validation — fetches the actual pinned bytes from IPFS and re-verifies the embedded manifest's signature + cert-chain trust + hash-binding |
 | `POST` | `/api/upload/images/verify` | Local hash check |
 | `POST` | `/api/upload/images/:imageId/verify-fabric` | Re-fetch from IPFS + check against the Fabric ledger |
-| `POST` | `/api/upload/images/report-tamper` | Report an image as possibly tampered |
-| `POST` | `/api/upload/images/:imageId/clear-dispute` | Auditor-only: clear a Disputed image back to Active |
+| `POST` | `/api/upload/images/report-tamper` | Report an image as possibly tampered (submitted as Org1) |
+| `POST` | `/api/upload/images/:imageId/clear-dispute` | Clear a Disputed image (same limitation as the video route) |
 
 ### Unified Feed, Sync & Revocation
 
@@ -761,7 +773,7 @@ If containers are stopped for any reason, just re-run `./network.sh up createCha
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/api/upload/blockchain/fabric-audit` | All Fabric records with per-org, per-peer endorsements |
-| `GET` | `/api/upload/blockchain/fabric-events` | **SSE stream** of `MediaRegistered` / `MediaRevoked` / `MediaDisputed` / `MediaDisputeCleared` |
+| `GET` | `/api/upload/blockchain/fabric-events` | **SSE stream** of `MediaRegistered` and `MediaRevoked` events (the listener receives every chaincode event; only these two are forwarded to the browser) |
 | `GET` | `/api/upload/blockchain/fabric-history/:kind/:id` | Full ledger history of one record |
 | `GET` | `/api/upload/blockchain/fabric-query` | Rich query — `?by=org&value=Org2MSP`, `?by=type&value=video`, `?by=revoked` |
 
@@ -780,8 +792,9 @@ All require `X-Org-Passcode` header except `/login`, which takes the passcode in
 | `POST` | `/api/upload/auditor/login` | Same shape, `AUDITOR_PORTAL_PASSCODE` |
 | `GET` | `/api/upload/auditor/pending` | Items with `status: "pending_auditor"` |
 | `GET` | `/api/upload/auditor/:mediaType/:mediaId/check` | Same integrity check as the Broadcaster's, gated by `AUDITOR_PORTAL_PASSCODE` |
+| `GET` | `/api/upload/auditor/:mediaType/:mediaId/audit` | **Auditor only.** Independent Audit — returns `{ passed, checks: [{ id, label, ok, detail }] }`; `ok: null` means the check could not be completed. See [Auditor Independent Audit](#auditor-independent-audit) |
 | `POST` | `/api/upload/auditor/:mediaType/:mediaId/approve` | Submits `ApproveByAuditor` as Org3MSP → `active` |
-| `GET` | `/api/upload/auditor/:mediaType/:mediaId/report` | Same report, gated by `AUDITOR_PORTAL_PASSCODE` |
+| `GET` | `/api/upload/auditor/:mediaType/:mediaId/report` | Same report, plus an `independentAudit` block whose failed checks are added to `findings` |
 | `POST` | `/api/upload/auditor/:mediaType/:mediaId/reject` | `{ reason }` → Submits `RejectByAuditor` as Org3MSP → `rejected` |
 
 ### Public Verification (no login, no passcode)
@@ -818,12 +831,16 @@ could walk the catalog directory's path upward via `../` segments and cause the 
 
 ### Rate limiting
 
-`express-rate-limit`, applied in two tiers:
+`express-rate-limit`, per client IP:
 
 | Scope | Window | Limit | Rationale |
 |---|---|---|---|
 | Whole API (`/api/upload/*`) | 15 min | 600 req/IP | Generous enough for feed polling, detail pages, and per-segment verification during normal HLS playback, while still bounding a single client |
 | `POST /api/upload` and `POST /api/upload/image` | 60 min | 20 req/IP | Each call triggers FFmpeg, forensic analysis, IPFS pinning, and a Fabric ledger write — expensive enough to need a tighter ceiling |
+| Portal login, approve, reject, revoke | 15 min | 30 req/IP | Bounds passcode guessing |
+| Portal queue, check, report, audit | 15 min | 300 req/IP | Read-only portal traffic |
+| `POST /api/upload/public-verify` | 15 min | 40 req/IP | Open to anyone, and each call hashes an upload of up to 500 MB |
+
 ### Other hardening
 
 - **`helmet`** — standard security headers (`X-Content-Type-Options`, `X-Frame-Options`, HSTS, etc). Content-Security-Policy is deliberately disabled (this is a JSON API + static file server, not an HTML-rendering app) and `Cross-Origin-Resource-Policy` is relaxed to `cross-origin` so the frontend — a different origin — can still load `/streams` and `/thumbnails` assets directly.
@@ -847,7 +864,8 @@ TrustStream/
 │   │   │   ├── ipfs.service.js              # Pinata upload (image, source MP4, segment, JSON), gateway, fetch (JSON + raw buffer)
 │   │   │   ├── timeline.service.js          # Revocation timeline built from GetMediaHistory
 │   │   │   ├── forensics.service.js         # All 4 video forensic modules (compression, temporal, AV sync, score fusion) in one file
-│   │   │   └── image-forensics.service.js   # Image forensics (JPEG quant + EXIF)
+│   │   │   ├── image-forensics.service.js   # Image forensics (JPEG quant + EXIF + ELA)
+│   │   │   └── audit.service.js             # Auditor-only Independent Audit (IPFS re-download, approval trail, metadata, resubmission)
 │   │   ├── routes/
 │   │   │   └── upload.routes.js             # All video + image endpoints, unified /feed (search/filter/pagination), stats, sync, timeline (mounted at /api/upload); rate limiting + ID validation
 │   │   └── server.js                        # Express entry — helmet, restricted CORS, global error handler, serves /streams + /thumbnails, starts Fabric event listener
@@ -878,16 +896,18 @@ TrustStream/
 │       │   ├── FabricAudit.jsx              # Live Fabric audit dashboard (SSE)
 │       │   ├── Analytics.jsx                # Platform analytics dashboard — real charts from GET /api/upload/stats
 │       │   ├── Admin.jsx                    # Tabbed upload (Video + Image), thumbnail picker, pipeline UI — gated by Clerk when VITE_REQUIRE_ADMIN_AUTH=true
-│       │   ├── OrgPortal.jsx                 # Shared Broadcaster/Auditor queue — per-item 4-signal check, Approve/Reject, downloadable review report
-│       │   └── PublicVerify.jsx              # Public verify-by-upload — hashes a viewer's file and compares it with both digests on the ledger
+│       │   ├── OrgPortal.jsx                # Shared Broadcaster/Auditor queue — per-item 4-signal check, Independent Audit panel (Auditor only), Approve/Reject, downloadable review report
+│       │   ├── PublicVerify.jsx             # Public verify-by-upload — hashes a viewer's file and compares it with both digests on the ledger
+│       │   └── HowItWorks.jsx               # Plain-language walkthrough of the pipeline
 │       ├── components/
 │       │   ├── VideoPlayer.jsx              # hls.js + per-segment SHA-256 + tamper overlay + posterUrl
 │       │   ├── ForensicPanel.jsx            # Visualizes the 4 video forensic modules
 │       │   ├── charts/                      # Hand-written inline-SVG chart components (Bar/GroupedBar/Donut) for Analytics.jsx
 │       │   └── Navbar.jsx                   # Reader navbar (logo + theme toggle + live badge + How It Works / Verify Media / Analytics links)
 │       ├── services/
-│       │   ├── api.js                       # videoAPI, imageAPI, feedAPI, statsAPI, timelineAPI, verifyAPI, createOrgPortalAPI
-│       │   └── hash.js                      # Browser SHA-256 (Web Crypto API)
+│       │   └── api.js                       # videoAPI, imageAPI, feedAPI, statsAPI, timelineAPI, verifyAPI, createOrgPortalAPI
+│       └── utils/
+│           └── hash.js                      # Browser SHA-256 (Web Crypto API)
 │
 ├── network/
 │   ├── chaincode/truststream/javascript/    # ★ Fabric chaincode (source of truth)
@@ -899,6 +919,7 @@ TrustStream/
     ├── networkconfig.yaml                   # Fabric connection profile + Org1 identity for Caliper
     ├── benchmarks/config.yaml               # Round definitions (workers, rate control, workload module paths)
     ├── workloads/*.js                       # register/query workload modules against truststreamcc
+    ├── workloads/metadata.js                # Realistic metadataJson payloads for the register workloads (chaincode v3.2)
     └── report.html                          # Generated after each run
 ```
 
@@ -969,7 +990,7 @@ The chaincode implements a 2-of-3 tamper-dispute mechanism directly, with the sa
 - **Recovery** — only the **Auditor** (`Org3MSP`) can call `ClearDispute`, resetting status to `active`; this is not a delete — the dispute and every prior tamper report remain visible in `GetMediaHistory`
 - **Guards** — `ReportTamper` is blocked once a proof is `revoked`; `ClearDispute` requires the proof to currently be `disputed`
 
-This was verified end-to-end via direct `peer chaincode invoke` calls as each org: a single org's report never disputes an item; two distinct non-creator orgs' reports do; a non-Auditor's `ClearDispute` attempt is rejected with `"Only Org3MSP (Auditor) may clear a dispute"`; the Auditor's clears successfully.
+This was verified end-to-end via direct `peer chaincode invoke` calls as each org: a single org's report never disputes an item; two distinct non-creator orgs' reports do; a non-Auditor's `ClearDispute` attempt is rejected with `"Only Org3MSP (Auditor) may clear a dispute"`; the Auditor's clears successfully. (Re-confirmed on 2026-11-26 by submitting with each org's own identity. Through the app's buttons this does not work yet — see [Known Limitations](#testing--known-limitations).)
 
 ---
 
@@ -997,7 +1018,7 @@ Each portal is a single shared passcode (`BROADCASTER_PORTAL_PASSCODE`/`AUDITOR_
 
 ## Pre-Approval Integrity Check
 
-The Broadcaster/Auditor portals originally showed nothing but a title, thumbnail, and Approve/Reject buttons — an org could approve anything without actually checking whether it was genuine. Each pending item's card now runs an automatic check as the queue loads (`GET /broadcaster|auditor/:mediaType/:mediaId/check`) and surfaces four independent signals before a decision is made:
+This check is shared by both portals; the Auditor additionally runs the [Independent Audit](#auditor-independent-audit). The Broadcaster/Auditor portals originally showed nothing but a title, thumbnail, and Approve/Reject buttons — an org could approve anything without actually checking whether it was genuine. Each pending item's card now runs an automatic check as the queue loads (`GET /broadcaster|auditor/:mediaType/:mediaId/check`) and surfaces four independent signals before a decision is made:
 
 | Signal | What it actually proves |
 |--------|--------------------------|
@@ -1019,6 +1040,32 @@ A failed check shouldn't end with an org clicking Reject and the reasoning evapo
 - Wrong-org attempts (e.g. submitting `ApproveByAuditor` as Org1MSP) correctly rejected by the chaincode with a clear error.
 - Logged into the Auditor portal, approved → confirmed `active`, confirmed the item now appears in the public feed (it's excluded by default while pending, the same way a newsroom wouldn't publish an unapproved draft).
 - Along the way, hit and fixed the CouchDB key-ordering determinism bug described above, and a second real bug: the approval routes weren't writing the chain's result back into the local catalog cache, so `/feed`/`/stats` kept showing the old pending status after a successful on-chain approval - fixed by syncing every approve/reject response into the local manifest, the same pattern every other write route in this file already follows.
+
+---
+
+## Auditor Independent Audit
+
+Both portals run the same [Pre-Approval Integrity Check](#pre-approval-integrity-check), which answers *"is this server's copy still what was registered?"*. Running the same check twice adds nothing, so the Auditor — the last gate before publication — additionally re-verifies the item from sources other than this server's own copy, and checks the approval trail that brought it this far. The Broadcaster's work is unchanged; the chaincode is unchanged.
+
+`GET /api/upload/auditor/:mediaType/:mediaId/audit` (Auditor passcode only — there is no Broadcaster route), implemented in `backend/src/services/audit.service.js`:
+
+| Check | Media | What it does |
+|---|---|---|
+| **IPFS copy** | image | Downloads the image from IPFS and compares its SHA-256 with the digest on the ledger |
+| **IPFS copy** | video | Downloads every HLS segment from IPFS, rebuilds the chain hashes and Merkle root, and compares the root with the ledger. The shared check re-hashes the server's *local* segments instead |
+| **C2PA names this record** | image | The manifest embedded in the downloaded bytes is `Trusted` and its `truststream.consortium` assertion names this media ID |
+| **Segment signatures** | video | Every segment's `.c2pa` sidecar has a valid ES256 signature (the shared check only verifies the source MP4) |
+| **Broadcaster approval** | both | The ledger's own history (`GetMediaHistory`) shows a `pending_broadcaster` → `pending_auditor` transition by `Org2MSP`; shows when and in which transaction |
+| **Title & description** | both | What reviewers and viewers are shown (local catalog) still matches what was registered on the ledger |
+| **Resubmission** | video | No *earlier* ledger record has the same `originalSha256` (the same master file submitted again) |
+
+Each check returns `ok: true`, `false`, or `null` — `null` means it could not be completed (e.g. the IPFS gateway returned 429), which is shown as **?** rather than as a failure. The portal shows the result as an **Independent Audit** panel on each item; if any check is not `true`, Approve goes through the existing "Approve Anyway" confirmation. The Auditor's downloadable report includes the audit and adds each failed check to `findings`.
+
+Downloads go one at a time with back-off (0 s, 3 s, 10 s) because the public Pinata gateway answers bursts with HTTP 429, and segment digests are cached for 10 minutes (a CID always names the same bytes). A 4-segment video took about 14 s to audit.
+
+**Verified on 2026-11-26** against the live network: clean image and video pass every check; before the Broadcaster approves, the trail check fails; a title edited in the local catalog after registration is caught (the shared check alone still passes it); a forged segment sidecar is caught; the same MP4 submitted twice flags the later submission only; Broadcaster passcode and no passcode get 401.
+
+**Limits:** the audit runs on the same backend server as everything else, so it is a separate check, not an independent party; and the approval gate is in the portal UI only — the chaincode does not require a passing audit.
 
 ---
 
@@ -1050,7 +1097,7 @@ Evidence from the file always outranks a claim made in the UI:
 | Verdict | Meaning |
 |---|---|
 | ✅ **Authentic** | The digest matches the published copy and the embedded manifest still verifies against these bytes |
-| ✅ **Same file** | Identical to the file the newsroom submitted — the pre-publication master. Genuine, just not the published asset (which differs only by the embedded manifest) |
+| ✅ **Same file** | Identical to the file the newsroom submitted — the pre-publication master. Genuine, just not the published asset (which differs only by the embedded manifest). **Video only:** for images the submitted file's digest is not recorded, so an image master returns *No provenance* |
 | 🚨 **Tampered** | The file carries TrustStream provenance naming this item, but its digest differs from the ledger's — the content was altered after publication |
 | 🚨 **Not this item** | Not the published item it was compared against, and carrying no provenance of its own: either an unrelated file, or one edited hard enough to strip the manifest |
 | ⛔ **Revoked** / ⚠️ **Disputed** / ⏳ **Not yet approved** | The bytes match a registered item whose ledger status disqualifies it |
@@ -1060,7 +1107,7 @@ The page shows all three digests side by side (submitted master, published copy,
 
 ### Verified end-to-end
 
-Tested against the live 3-org network with real files, not fixtures: an untouched published copy returned `authentic`; the submitter's own master returned `pre_publication_master` with `masterDigestFrom: "ledger"`; a copy with **one byte flipped** returned `tampered` with `validation_state: Invalid` — the C2PA manifest survived the edit and named its own record, so no claim was needed to catch it; a fully re-encoded copy (brightness changed, manifest stripped) returned `claim_mismatch`; and random unregistered bytes returned `unregistered`. Cross-checked with macOS's own `shasum -a 256`, which produces the identical digest — the comparison is reproducible without trusting this codebase.
+Tested against the live 3-org network with real files, not fixtures: an untouched published copy returned `authentic`; the submitter's own (video) master returned `pre_publication_master` with `masterDigestFrom: "ledger"`; a copy with **one byte flipped** returned `tampered` with `validation_state: Invalid` — the C2PA manifest survived the edit and named its own record, so no claim was needed to catch it; a fully re-encoded copy (brightness changed, manifest stripped) returned `claim_mismatch`; and random unregistered bytes returned `unregistered`. Cross-checked with macOS's own `shasum -a 256`, which produces the identical digest — the comparison is reproducible without trusting this codebase.
 
 ---
 
@@ -1155,13 +1202,13 @@ Risk formula:
 risk = 0.45 × Compression + 0.30 × Metadata + 0.25 × ELA
 ```
 
-Same Authentic / Suspicious / Likely Manipulated bands. The image detail page renders both modules with notes.
+Same Authentic / Suspicious / Likely Manipulated bands. The image detail page renders all three modules with notes.
 
 ---
 
 ## Forensic Analysis Modules
 
-Four quantitative forensic modules all live inside **`forensics.service.js`** (one file — see the note above), analyzing video file properties to detect signs of re-encoding, frame splicing, or audio replacement — independently of C2PA or Fabric verification.
+Four quantitative forensic modules all live inside **`forensics.service.js`** (one file), analyzing video file properties to detect signs of re-encoding, frame splicing, or audio replacement — independently of C2PA or Fabric verification.
 
 ### Module 1 — Compression Forensics
 
@@ -1240,7 +1287,7 @@ GET /api/upload/blockchain/revocation-timeline?id=<mediaId>&kind=video|image
 
 `http://localhost:5173/fabric-audit`
 
-A browsable view of everything the consortium has committed to `mychannel`, since Fabric — being permissioned — has no public block explorer like Etherscan. Summary tiles, filters (all/ready/revoked/degraded/skipped), per-org **and** per-peer endorsement display, and a green **Live** badge — new records appear the instant their block commits, over SSE (no polling), via `GET /api/upload/blockchain/fabric-events`.
+A browsable view of everything the consortium has committed to `mychannel`, since Fabric — being permissioned — has no public block explorer like Etherscan. Summary tiles, filters (all/ready/disputed/revoked/degraded/skipped), per-org **and** per-peer endorsement display, and a green **Live** badge — new records appear the instant their block commits, over SSE (no polling), via `GET /api/upload/blockchain/fabric-events`.
 
 ---
 
@@ -1262,31 +1309,37 @@ Charts are hand-written inline SVG (no charting library added — kept the bundl
 cd benchmarking
 npm install
 npm install @hyperledger/fabric-gateway@1.7.1 @grpc/grpc-js@1.13.1   # Caliper's own `caliper bind` hits a spawn bug on Windows; installing the SDK directly works around it
-npx caliper launch manager --caliper-workspace . --caliper-networkconfig networkconfig.yaml --caliper-benchconfig benchmarks/config.yaml --caliper-flow-only-test
+CALIPER_RUN_ID=$(date +%s) npx caliper launch manager --caliper-workspace . --caliper-networkconfig networkconfig.yaml --caliper-benchconfig benchmarks/config.yaml --caliper-flow-only-test
 ```
 
-`networkconfig.yaml` connects as the NewsAgency (Org1MSP) admin identity with Fabric service discovery enabled, so every write still needs live endorsement from all 3 orgs' peers — Caliper isn't measuring against a relaxed policy. `benchmarks/config.yaml` defines the rounds; `workloads/*.js` implement them against `RegisterVideoProof`, `RegisterImageProof`, and `GetMediaProof`.
+`CALIPER_RUN_ID` makes the query round's seed record unique per run (a fixed ID would already exist on the ledger from an earlier run). The key path in `networkconfig.yaml` is specific to this machine's WSL setup — point it at your own `Admin@org1.example.com` keystore.
+
+`networkconfig.yaml` connects as the NewsAgency (Org1MSP) admin identity with Fabric service discovery enabled, so every write still needs live endorsement from all 3 orgs' peers — Caliper isn't measuring against a relaxed policy. `benchmarks/config.yaml` defines the rounds; `workloads/*.js` implement them against `RegisterVideoProof`, `RegisterImageProof`, and `GetMediaProof`. Each registration carries a `metadataJson` payload shaped like the backend's real one (`workloads/metadata.js`; a video carries 3 segments), so the writes are the same size as real ones under chaincode v3.2.
+
+Every benchmark registration is a real ledger record and cannot be deleted. Since chaincode v3.2 they start at `pending_broadcaster`, so after a run they are rejected through the Broadcaster identity (reason: *"Caliper benchmark load-test record"*) to keep the approval queue clean; that cleanup is not part of the measured rounds.
 
 ### Results
 
-Six rounds, 301 total transactions, **0 failures**:
+Run on **2026-11-26** against chaincode **v3.2** (with on-chain `metadataJson`), Fabric peer v2.5.15, all containers on one Windows 11 machine (Docker Desktop + WSL 2). Six rounds, 301 total transactions, **0 failures**:
 
 | Round | Workers | Txns | Send Rate (TPS) | Avg Latency | Min – Max Latency | Throughput (TPS) |
 |---|---|---|---|---|---|---|
-| Register video proof | 1 | 20 | 5.3 | **4.67s** | 2.87s – 6.47s | 3.0 |
-| Register image proof | 1 | 20 | 5.3 | **1.20s** | 0.23s – 2.17s | 4.8 |
-| Register image proof | 5 | 60 | 15.3 | **0.52s** | 0.14s – 0.96s | 14.5 |
-| Register image proof | 10 | 100 | 25.2 | **0.46s** | 0.15s – 1.00s | 23.0 |
-| Query (`GetMediaProof`) | 5 | 100 | 25.2 | **0.02s** | 0.01s – 0.05s | 25.2 |
+| Register video proof | 1 | 20 | 5.3 | **1.23s** | 0.23s – 2.22s | 5.0 |
+| Register image proof | 1 | 20 | 5.3 | **1.09s** | 0.19s – 1.99s | 5.0 |
+| Register image proof | 5 | 60 | 15.2 | **0.48s** | 0.15s – 0.84s | 14.7 |
+| Register image proof | 10 | 100 | 25.3 | **0.37s** | 0.14s – 0.64s | 24.4 |
+| Query (`GetMediaProof`) | 5 | 100 | 25.3 | **0.02s** | 0.01s – 0.05s | 25.2 |
+
+(The sixth round seeds the single record the query round reads: 1 transaction, 2.30s.)
 
 Full per-round detail (Caliper's generated report) is written to `benchmarking/report.html` on every run.
 
 ### What this shows, against the four metrics this benchmark was built to measure
 
-1. **Throughput** scales close to linearly with concurrency for the write path: ~4.8 TPS at 1 worker → 14.5 TPS at 5 → 23.0 TPS at 10, with zero failures — the network isn't saturated in this range.
-2. **End-to-end registration latency**: image registration (1.20s at 1 worker) is markedly faster than video registration (4.67s at 1 worker) in this run; the two weren't tested at matched worker counts back-to-back, so before treating that gap as a real video-vs-image cost difference rather than run-order/warm-up skew, it's worth re-running both at identical worker counts in the same pass.
+1. **Throughput** follows the send rate for the write path: 5.0 TPS at 1 worker → 14.7 TPS at 5 → 24.4 TPS at 10, with zero failures. Throughput stays close to the configured send rate in every round, so the network was not saturated in this range — these figures are a lower bound on capacity, not its limit.
+2. **End-to-end registration latency**: at 1 worker, video registration averaged 1.23s and image registration 1.09s — close, even though each video write carries a larger metadata payload. An earlier run (September 2026, chaincode before v3.2) had measured 4.67s for video; that gap did not reproduce and was most likely warm-up skew, since the video round runs first.
 3. **Endorsement confirmation time** *is* the latency figure above, not a separate number — every write here requires unanimous endorsement from all 3 orgs' peers before Caliper marks it committed, so "avg latency" already includes proposal → endorsement → ordering → commit end to end.
-4. **Concurrency scaling**: image-registration latency actually *improved* going from 1→5→10 workers (1.20s → 0.52s → 0.46s avg) while throughput kept climbing — the single-worker case is dominated by one-time gRPC/TLS/discovery setup, which amortizes away under concurrency (see the connection-pooling note below). Read throughput (25.2 TPS, 20ms avg latency) is, as expected, far faster than any write path, since queries skip endorsement and ordering entirely.
+4. **Concurrency scaling**: image-registration latency actually *improved* going from 1→5→10 workers (1.09s → 0.48s → 0.37s avg) while throughput kept climbing — the single-worker case is dominated by one-time gRPC/TLS/discovery setup, which amortizes away under concurrency (see the connection-pooling note below). Read throughput (25.2 TPS, 20ms avg latency) is, as expected, far faster than any write path, since queries skip endorsement and ordering entirely.
 
 **Scale caveat:** this is a small run (≤100 tx/round) on a single-machine Docker deployment (all peers/orderer/CouchDB on one host) — good for validating the methodology and directional results, not a production-representative topology or load. A follow-up run at higher transaction counts and more concurrency levels (e.g. 20, 50 workers) would be needed to find the network's actual saturation point.
 
@@ -1308,12 +1361,11 @@ Profiling why single-worker latency was so much higher than 5/10-worker latency 
 | Item | Value |
 |------|-------|
 | Pinning Service | Pinata |
-| Gateway | [gateway.pinata.cloud/ipfs](https://gateway.pinata.cloud/ipfs) |
-| Public Gateway | [ipfs.io/ipfs](https://ipfs.io/ipfs) |
-| Video content | `.ts` segments + video metadata JSON + forensic report |
-| Image content | Image bytes + C2PA sidecar JSON + image metadata JSON |
+| Gateway | [gateway.pinata.cloud/ipfs](https://gateway.pinata.cloud/ipfs) (set by `IPFS_GATEWAY`; the free public gateway rate-limits with HTTP 429) |
+| Video content | `.ts` segments + C2PA-embedded source MP4 + video metadata JSON + forensic report |
+| Image content | C2PA-embedded image bytes + image metadata JSON |
 | Batch upload (video) | 2 segments per batch, rate-limit aware, auto-retry |
-| Image upload | Single-shot, with separate sidecar pin |
+| Image upload | Single-shot (the C2PA manifest is inside the image bytes) |
 
 ---
 
@@ -1321,14 +1373,14 @@ Profiling why single-worker latency was so much higher than 5/10-worker latency 
 
 | Asset | Local | IPFS | Fabric Ledger | Notes |
 | :--- | :--- | :--- | :--- | :--- |
-| **Video original MP4** | ❌ Temp | ❌ | ❌ | Deleted after FFmpeg |
+| **Video source MP4 (C2PA-embedded)** | ❌ Deleted after pin | ✅ Pinned (`sourceIpfsCid`) | *(both digests in `proof.metadata`)* | The uploaded original is deleted after FFmpeg; the C2PA-embedded copy is pinned |
 | **Video HLS segments** | ✅ `public/streams/` | ✅ Pinned | *(covered by Merkle root)* | Local copy serves live playback (see note below); IPFS copy is independently verifiable and playable via the "🌐 Direct from IPFS" toggle on the video detail page |
 | **Video .c2pa sidecars** | ✅ Next to segments | *(in metadata JSON)* | — | Allows offline verification |
 | **Video metadata JSON** | — | ⚠ Best-effort mirror | ✅ Full content (`proof.metadata`, chaincode v3.2+) | The ledger copy is authoritative — a failed/blocked IPFS pin no longer blocks registration or loses the metadata, it just costs the convenience gateway URL. Carries both file digests (`originalSha256`, `sourceSha256`) as of v15 |
 | **Video forensic report** | — | ✅ Pinned | *(summary embedded in `proof.metadata`)* | — |
 | **Video thumbnail** | ✅ `public/thumbnails/` | — | — | Poster image, not part of provenance |
 | **Image bytes** | ❌ Deleted after pin | ✅ Pinned | *(hash anchored)* | IPFS-only |
-| **Image C2PA sidecar** | ❌ Never written to disk | ✅ Pinned | *(hash anchored)* | IPFS-only |
+| **Image C2PA manifest** | ❌ | ✅ Embedded in the pinned image bytes | *(c2paHash anchored)* | No separate sidecar |
 | **Image metadata JSON** | — | ⚠ Best-effort mirror | ✅ Full content (`proof.metadata`, chaincode v3.2+) | Same authoritative-ledger-copy reasoning as video metadata above |
 | **Manifest catalog (cache)**| ✅ `data/catalog/*` | — | — | Reproducible from the ledger via sync |
 
@@ -1357,9 +1409,41 @@ The thesis core promise is **"uploaded content cannot be deleted."** This is enf
 * **Chaincode:** There is NO delete function anywhere. Only `RevokeMedia` and `ClearDispute` (both status flips, never a deletion). The proof document stays in the ledger's state and version history forever. Status guards prevent revoked media from accepting further tamper reports.
 * **IPFS:** Content-addressed by definition. Even if Pinata unpins, the CID still resolves on any other IPFS node that has the content. Hashes anchored on the Fabric ledger let any third party detect substitution.
 * **HTTP API:** There are NO `DELETE` routes. The mutation endpoints are `report-tamper`, `clear-dispute`, `revoke` (with per-layer guard rails). The Admin UI exposes no delete affordance.
-* **Catalog service:** `removeManifest()` exists for internal sync hygiene only, NOT exposed via any route. The Revocation Timeline endpoint reads and displays the catalog merge — but never deletes from it.
+* **Catalog service:** has no delete function at all — only write, read, update and list. The Revocation Timeline endpoint reads and displays the catalog merge — but never deletes from it.
 
 *The Revocation Timeline Visual reinforces all four layers by making the full immutable event log visible and navigable by any user, sourced directly from `GetMediaHistory`.*
+
+---
+
+## Testing & Known Limitations
+
+### What was tested (2026-11-26)
+
+Against the live 3-org network, with the backend running natively on Windows, using generated test media:
+
+- **API end to end:** image and video upload → forensics → C2PA (`Trusted`) → IPFS → Fabric registration (6–9 s in the background); Broadcaster → Auditor approval with 3/3 peer agreement; the Auditor cannot approve before the Broadcaster; reject; verify-fabric; segment hash verification; public verify (published copy, one-byte-edited copy, video master, unrelated file, revoked item); ledger history; revoke (and second revoke refused); sync-from-blockchain; SSE stream; input validation (missing file, wrong type, over-long title, unknown ID, path traversal).
+- **In a browser (headless Edge):** Admin video and image upload; Broadcaster and Auditor login and approve; Verify Media page; feed search; local HLS playback; the red *Integrity Violation Detected* overlay when a segment on disk is altered; Check Authenticity.
+- **Chaincode dispute rules**, submitted with each org's own identity: Org2's single report does not dispute; Org2 + Org3 reports do; Org2's clear is refused; Org3's clear succeeds.
+- **Caliper benchmark** re-run against chaincode v3.2 (see [Performance Benchmarking](#performance-benchmarking-hyperledger-caliper)).
+- **Auditor Independent Audit** (see [its section](#auditor-independent-audit)).
+
+There is no automated test suite in the repository; these were run as scripts against the running system.
+
+### Known limitations
+
+| Area | Limitation |
+|---|---|
+| Tamper / dispute through the app | `reportTamper()` and `clearDispute()` in `fabric.service.js` submit with the Org1 (NewsAgency) identity. The chaincode does not count the uploader's own report and only lets Org3 clear, so through the app an item never becomes Disputed and Clear Dispute always fails. The `clear-dispute` routes also have no passcode. |
+| Direct-from-IPFS playback | `GET /ipfs-playlist/:videoId` joins the playlist lines with `""` instead of `"\n"`, so the "🌐 Direct from IPFS" player does not start. Local-cache playback works. |
+| Upload API authentication | Clerk only gates the Admin page in the browser; `POST /api/upload` and `POST /api/upload/image` accept requests without login. |
+| Portal access | One shared passcode per org, not per-user accounts. The approval gate for failed checks is in the portal UI; the chaincode does not check it. |
+| Single server | All three orgs' identities, the checks and the audit run on one backend server — a real consortium would run one service per org. |
+| Forensics accuracy | Thresholds and weights were tuned on a small set of clips, not a labelled dataset. In a quick synthetic test, a JPEG with a region pasted from another image scored 0.237 (*Authentic*, lower than the original's 0.249), and a strong colour edit did not change the score; a low-quality re-save was flagged *Suspicious*. Synthetic test-pattern videos are often labelled *Suspicious*. |
+| Image master digest | Only videos record the submitter's original file digest; an image master in Public Verify returns *No provenance*. |
+| Timeline | Broadcaster/Auditor approvals and rejections are not shown as timeline events. |
+| IPFS gateway | The public Pinata gateway returns HTTP 429 under bursts; IPFS-based checks then report "could not be completed". A dedicated gateway (`IPFS_GATEWAY`) avoids this. |
+| Video input | A non-video file sent as `video/mp4` is rejected with HTTP 500 ("FFmpeg processing failed") rather than 400; a JPEG sent as a video was accepted and produced a 1-segment video. |
+| Deployment | Single machine, one peer per org, single Raft orderer. |
 
 ---
 
@@ -1382,6 +1466,12 @@ The thesis core promise is **"uploaded content cannot be deleted."** This is enf
 ---
 
 ## What's New
+
+### v16 — Auditor Independent Audit, Benchmark Re-run, README Audit (November 2026)
+
+* **Auditor Independent Audit:** the Broadcaster and Auditor portals previously ran the identical check. The Auditor now additionally re-downloads the media from IPFS and checks it against the ledger, verifies every segment signature, confirms the Broadcaster's approval from the ledger history, compares title/description with the ledger, and flags a resubmitted master. See [Auditor Independent Audit](#auditor-independent-audit).
+* **Caliper benchmark re-run against chaincode v3.2:** the workloads were written before `metadataJson` was added and no longer matched the chaincode. They now send realistic metadata payloads; results updated in the README and the Analytics page.
+* **README checked against the code:** corrected the container count (3 peers, not 6), restart policy, Fabric version, image C2PA storage (embedded, no sidecar), SSE events, rate limits, Admin pipeline step count, and project structure; added [Testing & Known Limitations](#testing--known-limitations).
 
 ### v15 — Public Verify by Upload, File Digests On-Chain, Reviewer Reports (September 2026)
 

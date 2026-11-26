@@ -15,8 +15,37 @@ function CheckPill({ label, ok, isDark }) {
   );
 }
 
+// The Auditor's Independent Audit: one line per check with its evidence.
+// ok === null means the check could not be completed, not that it failed.
+function AuditPanel({ entry, isDark }) {
+  const muted = "text-neutral-500";
+  return (
+    <div className={`mt-3 rounded-lg border p-2.5 ${isDark ? "border-neutral-800" : "border-neutral-200"}`}>
+      <p className="text-[11px] font-semibold mb-1.5">Independent Audit</p>
+      {(!entry || entry.status === "checking") && (
+        <p className={`text-[11px] ${muted}`}>⏳ Downloading from IPFS and checking the ledger history…</p>
+      )}
+      {entry?.status === "error" && <p className="text-[11px] text-red-400">⚠ Audit failed: {entry.error}</p>}
+      {entry?.status === "done" && (
+        <ul className="space-y-1">
+          {entry.result.checks.map((c) => (
+            <li key={c.id} className="text-[11px] flex gap-1.5">
+              <span className={c.ok === true ? "text-emerald-500" : c.ok === false ? "text-red-500" : "text-amber-500"}>
+                {c.ok === true ? "✓" : c.ok === false ? "✗" : "?"}
+              </span>
+              <span>
+                <span className="font-semibold">{c.label}:</span> <span className={muted}>{c.detail}</span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 // Shared implementation for both /broadcaster and /auditor - same workflow,
-// same UI, only the org identity, label, and next-stage copy differ. Each
+// same UI, but the Auditor additionally gets the Independent Audit. Each
 // instance gets its own sessionStorage key so logging into one doesn't
 // grant the other (they really are different Fabric identities on the
 // backend - see fabric.service.js's per-org connections).
@@ -44,6 +73,9 @@ export default function OrgPortal({ org, orgLabel, accentColor, nextStageLabel }
   // Item awaiting the "Approve Anyway" confirmation because its check failed.
   const [confirmingId, setConfirmingId] = useState(null);
   const [reportingId, setReportingId] = useState(null);
+  // Independent Audit results (Auditor only), same keys as checks.
+  const [audits, setAudits] = useState({});
+  const isAuditor = org === "auditor";
 
   const bg = isDark ? "bg-[#080808]" : "bg-neutral-100";
   const text = isDark ? "text-white" : "text-neutral-900";
@@ -74,6 +106,17 @@ export default function OrgPortal({ org, orgLabel, accentColor, nextStageLabel }
     });
   }, []);
 
+  const runAudits = useCallback((pendingItems, storedPasscode) => {
+    pendingItems.forEach((item) => {
+      const key = `${item.mediaType}:${item.mediaId}`;
+      const save = (value) => setAudits((prev) => ({ ...prev, [key]: value }));
+      save({ status: "checking" });
+      api.audit(storedPasscode, item.mediaType, item.mediaId)
+        .then((res) => save({ status: "done", result: res.data }))
+        .catch((err) => save({ status: "error", error: err.response?.data?.error || err.message }));
+    });
+  }, []);
+
   const fetchPending = useCallback(() => {
     const storedPasscode = sessionStorage.getItem(sessionKey);
     if (!storedPasscode) return;
@@ -84,6 +127,7 @@ export default function OrgPortal({ org, orgLabel, accentColor, nextStageLabel }
         const pendingItems = res.data?.items || [];
         setItems(pendingItems);
         runChecks(pendingItems, storedPasscode);
+        if (isAuditor) runAudits(pendingItems, storedPasscode);
       })
       .catch((err) => {
         if (err.response?.status === 401) {
@@ -94,7 +138,7 @@ export default function OrgPortal({ org, orgLabel, accentColor, nextStageLabel }
         }
       })
       .finally(() => setLoading(false));
-  }, [org, runChecks]);
+  }, [org, runChecks, runAudits]);
 
   useEffect(() => {
     if (authed) fetchPending();
@@ -120,6 +164,7 @@ export default function OrgPortal({ org, orgLabel, accentColor, nextStageLabel }
     setAuthed(false);
     setItems([]);
     setChecks({});
+    setAudits({});
   };
 
   const doApprove = async (item) => {
@@ -143,7 +188,9 @@ export default function OrgPortal({ org, orgLabel, accentColor, nextStageLabel }
   const handleApprove = (item) => {
     const key = `${item.mediaType}:${item.mediaId}`;
     const check = checks[key];
-    const passed = check?.status === "done" && check.result?.passed === true;
+    const audit = audits[key];
+    const passed = check?.status === "done" && check.result?.passed === true
+      && (!isAuditor || (audit?.status === "done" && audit.result?.passed === true));
     if (!passed) {
       setConfirmingId(key);
       return;
@@ -264,6 +311,8 @@ export default function OrgPortal({ org, orgLabel, accentColor, nextStageLabel }
           const isConfirming = confirmingId === key;
           const checkEntry = checks[key];
           const checkResult = checkEntry?.status === "done" ? checkEntry.result : null;
+          const auditEntry = audits[key];
+          const isAuditing = isAuditor && (!auditEntry || auditEntry.status === "checking");
           const isChecking = !checkEntry || checkEntry.status === "checking";
           return (
             <div key={key} className={`rounded-2xl border p-4 ${cardBg}`}>
@@ -330,6 +379,8 @@ export default function OrgPortal({ org, orgLabel, accentColor, nextStageLabel }
                 )}
               </div>
 
+              {isAuditor && <AuditPanel entry={auditEntry} isDark={isDark} />}
+
               {isRejecting ? (
                 <div className="mt-3 space-y-2">
                   <input
@@ -360,7 +411,7 @@ export default function OrgPortal({ org, orgLabel, accentColor, nextStageLabel }
                   <div className={`rounded-lg border p-2.5 text-xs ${isDark ? "bg-amber-950/20 border-amber-800/30 text-amber-400" : "bg-amber-50 border-amber-200 text-amber-700"}`}>
                     ⚠ {checkEntry?.status === "error"
                       ? "The integrity check couldn't complete for this item."
-                      : "This item failed the automatic hash / Fabric / C2PA / forensics check."} Approve only if you've verified it another way.
+                      : `This item did not pass every automatic check${isAuditor ? " or the Independent Audit" : ""}.`} Approve only if you've verified it another way.
                   </div>
                   <div className="flex gap-2">
                     <button
@@ -390,11 +441,11 @@ export default function OrgPortal({ org, orgLabel, accentColor, nextStageLabel }
                 <div className="flex gap-2 mt-3">
                   <button
                     onClick={() => handleApprove(item)}
-                    disabled={isActing || isChecking}
+                    disabled={isActing || isChecking || isAuditing}
                     className="flex-1 py-2 rounded-lg text-white text-xs font-semibold disabled:opacity-50"
                     style={{ background: accentColor }}
                   >
-                    {isActing ? "Approving…" : isChecking ? "Checking…" : `✓ Approve → ${nextStageLabel}`}
+                    {isActing ? "Approving…" : isChecking || isAuditing ? "Checking…" : `✓ Approve → ${nextStageLabel}`}
                   </button>
                   <button
                     onClick={() => setRejectingId(key)}
